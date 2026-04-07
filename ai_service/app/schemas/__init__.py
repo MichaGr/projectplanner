@@ -1,4 +1,11 @@
-from .schemas import (
+from .notion import (
+    NotionDatabaseProperty,
+    NotionDatabaseSchemaRequest,
+    NotionDatabaseSchemaResponse,
+    NotionProgressEntry,
+    NotionProgressSyncRequest,
+)
+from .planner import (
     AIChatRequest,
     AIChatResponse,
     AIContext,
@@ -9,7 +16,6 @@ from .schemas import (
     AIPlannerOutput,
     AIProposal,
     AIResolvedIntent,
-    AppSettingsResponse,
     CreateEdgePayload,
     CreateEdgesOperation,
     CreateGroupOperation,
@@ -17,14 +23,6 @@ from .schemas import (
     CreateTaskPayload,
     CreateTasksOperation,
     GraphMutationOperation,
-    ModelOption,
-    NotionDatabaseProperty,
-    NotionDatabaseSchemaRequest,
-    NotionDatabaseSchemaResponse,
-    NotionProgressEntry,
-    NotionProgressSyncRequest,
-    NotionSettingsUpdate,
-    OpenAISettingsUpdate,
     PlannerEdgeRecord,
     PlannerNodeRecord,
     PlannerSnapshot,
@@ -32,4 +30,12 @@ from .schemas import (
     RootRecord,
     Size,
     UpdateNodeFieldsOperation,
+)
+from .settings import (
+    AppSettingsResponse,
+    ModelOption,
+    NotionSettingsUpdate,
+    OpenAISettingsUpdate,
+    StoredSettings,
+    build_settings_response,
 )

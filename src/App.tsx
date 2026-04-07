@@ -31,7 +31,6 @@ import {
   AppSettings,
   GraphMutationOperation,
   ModelOption,
-  confirmAIProposal,
   fetchAIGraph,
   fetchNotionDatabaseSchema,
   fetchModels,
@@ -3261,7 +3260,6 @@ function PlannerApp() {
     setAiError(null);
 
     try {
-      await confirmAIProposal(pendingProposal);
       setSnapshot((current) => applyAIProposalToSnapshot(current, pendingProposal));
       appendSessionJournal({
         type: 'apply_proposal',

@@ -342,18 +342,6 @@ export const sendAIChat = async (payload: {
   };
 };
 
-export const confirmAIProposal = async (proposal: AIProposal): Promise<{ accepted: true }> => {
-  const response = await fetch('/api/ai/apply', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ proposal }),
-  });
-
-  return ensureOk<{ accepted: true }>(response);
-};
-
 export const uploadAIDocuments = async (files: File[]): Promise<AIDocument[]> => {
   const body = new FormData();
   for (const file of files) {
