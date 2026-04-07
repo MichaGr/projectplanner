@@ -1,0 +1,29 @@
+services:
+  project-planner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4173:80"
+    depends_on:
+      - ai-service
+    restart: unless-stopped
+  ai-service:
+    build:
+      context: ./ai_service
+      dockerfile: Dockerfile
+    environment:
+      SETTINGS_PATH: /app/data/settings.json
+    volumes:
+      - ./data/ai-service:/app/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+  ai-service-test:
+    build:
+      context: ./ai_service
+      dockerfile: Dockerfile
+    environment:
+      SETTINGS_PATH: /tmp/test-settings.json
+    command: ["pytest", "-q"]
+    profiles: ["test"]

@@ -1,0 +1,1348 @@
+{
+  "version": 1,
+  "project": {
+    "root": {
+      "title": "Echo",
+      "description": "Echo is a chaotic multiplayer party arena game where every move you make creates ghosts that come back to haunt your friends – and you. Built around fast rounds, frantic interactions, and constant chain-reaction nonsense, the game is designed to create the kind of messy, blame-filled moments where everything goes wrong at once and everyone is laughing anyway. The core appeal is simple: players scramble through a high-energy arena while their past actions keep reappearing as hazards, distractions, and opportunities for total sabotage. Echo leans into a friendslop-style party experience with quick decision-making, escalating chaos, and endless \"this is so stupid\" moments that are funniest when shared with friends.",
+      "completionCriteria": "Game published on Steam.",
+      "tags": []
+    },
+    "nodes": [
+      {
+        "id": "task-j1jsdl",
+        "kind": "task",
+        "title": "Publish Game",
+        "status": "todo",
+        "position": {
+          "x": 1980,
+          "y": -108
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": []
+      },
+      {
+        "id": "task-xlmd80",
+        "kind": "group",
+        "title": "Vertical Slice",
+        "status": "todo",
+        "position": {
+          "x": 630,
+          "y": -108
+        },
+        "description": "A publicly available Steam demo build of Echo that represents the game’s vertical slice: one polished, end-to-end multiplayer party arena experience showing the core gameplay loop, visual style, moment-to-moment chaos, and overall quality target for the full game. ",
+        "completionCriteria": "For this node to count as complete, the demo must be uploaded to Steam, connected to the store page/app configuration, pass Steam review, have all required store and metadata assets in place, and be released so players can download it from the Steam page.",
+        "tags": [
+          "Release.Demo"
+        ],
+        "size": {
+          "width": 310,
+          "height": 160
+        }
+      },
+      {
+        "id": "task-twdjjf",
+        "kind": "group",
+        "title": "Hand in Funding Application Game City",
+        "status": "todo",
+        "position": {
+          "x": -450,
+          "y": -72
+        },
+        "description": "Steam market research using SteamDB and VGInsight. Collect information about genre/subgenre specific metrics like revenue, sales, how many games sold in the last three years/per month, average price, competing games in the last three years. ",
+        "completionCriteria": "",
+        "tags": [],
+        "size": {
+          "width": 310,
+          "height": 160
+        }
+      },
+      {
+        "id": "task-hbceoz",
+        "kind": "group",
+        "title": "Pitch Deck",
+        "status": "todo",
+        "position": {
+          "x": 69.75491332078158,
+          "y": -180.89676780198738
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-twdjjf",
+        "size": {
+          "width": 310,
+          "height": 160
+        }
+      },
+      {
+        "id": "task-z5t0si",
+        "kind": "group",
+        "title": "Additional Project Description",
+        "status": "todo",
+        "position": {
+          "x": 71.42068783668941,
+          "y": 23.49914760655375
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-twdjjf",
+        "size": {
+          "width": 310,
+          "height": 160
+        }
+      },
+      {
+        "id": "task-bsism6",
+        "kind": "group",
+        "title": "Fix Bugs",
+        "status": "todo",
+        "position": {
+          "x": 1440,
+          "y": 360
+        },
+        "description": "Fix all bugs in this group",
+        "completionCriteria": "All bugs are fixed",
+        "tags": [],
+        "size": {
+          "width": 310,
+          "height": 160
+        }
+      },
+      {
+        "id": "task-sd6jex",
+        "kind": "task",
+        "title": "Markt Analysis & Strategy",
+        "status": "done",
+        "position": {
+          "x": -264.81554540895,
+          "y": 17.932420695626874
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-hbceoz"
+      },
+      {
+        "id": "task-p49fr4",
+        "kind": "task",
+        "title": "Project Description",
+        "status": "done",
+        "position": {
+          "x": -264.9054734659685,
+          "y": 149.44999680762288
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-hbceoz"
+      },
+      {
+        "id": "task-m383jk",
+        "kind": "task",
+        "title": "Core Gameplay",
+        "status": "done",
+        "position": {
+          "x": -270.91806076871876,
+          "y": 418.72233143667665
+        },
+        "description": "Define Gameplay Loop.- Define Other Core Features\nLoop:\n- Collect Crystal\n- (Spawn Ghost based on previous)\n- Don't Die before your friends\n\nOther Features:\n- Card-based Upgrade System -> More Chaos\n- ",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-hbceoz"
+      },
+      {
+        "id": "task-yydgfu",
+        "kind": "task",
+        "title": "Standout Features",
+        "status": "done",
+        "position": {
+          "x": 242.65781668430267,
+          "y": 416.02416977989134
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-hbceoz"
+      },
+      {
+        "id": "task-jfugjq",
+        "kind": "task",
+        "title": "Team",
+        "status": "done",
+        "position": {
+          "x": 241.99302214106422,
+          "y": 4.641415681074903
+        },
+        "description": "Create a Slide about the team - me!",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-hbceoz"
+      },
+      {
+        "id": "task-5lzsvm",
+        "kind": "task",
+        "title": "Style Reference",
+        "status": "done",
+        "position": {
+          "x": -265.401072973456,
+          "y": 280.92067939118976
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-hbceoz"
+      },
+      {
+        "id": "task-pibbam",
+        "kind": "task",
+        "title": "Bezug auf Förderkriterien",
+        "status": "done",
+        "position": {
+          "x": 242.87357213998052,
+          "y": 144.59523074746832
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-hbceoz"
+      },
+      {
+        "id": "task-ugckro",
+        "kind": "task",
+        "title": "Next Steps after Funding",
+        "status": "done",
+        "position": {
+          "x": 245.88109834053392,
+          "y": 283.1121643999118
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-hbceoz"
+      },
+      {
+        "id": "task-34we1t",
+        "kind": "task",
+        "title": "Genre",
+        "status": "done",
+        "position": {
+          "x": 408.7568950729191,
+          "y": 319.71278622309325
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-z5t0si"
+      },
+      {
+        "id": "task-jfhugn",
+        "kind": "task",
+        "title": "Target Group",
+        "status": "done",
+        "position": {
+          "x": 407.0866663908151,
+          "y": 586.9493753597395
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-z5t0si"
+      },
+      {
+        "id": "task-9y27iy",
+        "kind": "task",
+        "title": "Concept & Content of Prototype",
+        "status": "done",
+        "position": {
+          "x": 405.2425565653518,
+          "y": 727.3355252281584
+        },
+        "description": "Konzept und Inhalt für den Prototyp inkl. Milestones (zur zeitlichen Einordnung der Milestones: im Falle einer Bewerbung in der ersten Förderrunde bitte Juli als regulären Projektstart verwenden, im Falle einer Bewerbung in der zweiten Förderrunde Dezember, sofern das Projekt nicht zu einem späteren Zeitpunkt starten soll)",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-z5t0si"
+      },
+      {
+        "id": "task-fyphlw",
+        "kind": "task",
+        "title": "Team & Externals",
+        "status": "done",
+        "position": {
+          "x": 408.05017380970963,
+          "y": 860.3711810509508
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-z5t0si"
+      },
+      {
+        "id": "task-70vbem",
+        "kind": "task",
+        "title": "Standout Features and how they are derived from Market Analysis",
+        "status": "done",
+        "position": {
+          "x": 710.9777466610616,
+          "y": 1046.6791079074103
+        },
+        "description": "Herleitung der herausragenden Merkmale auf Basis der Markt-/Wettbe-werbsanalyse\no\nWarum kann das Projekt mit diesen herausragenden Merkmalen gut am Markt positioniert werden?\no\nWelche Bewertung des Wettbewerbs nimmt der Antragsteller auf Grundlage der Marktanalyse vor?",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-z5t0si"
+      },
+      {
+        "id": "task-dagwv6",
+        "kind": "task",
+        "title": "Market Analysis & Strategy",
+        "status": "done",
+        "position": {
+          "x": 399.43138370300073,
+          "y": 1049.4709793264033
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-z5t0si"
+      },
+      {
+        "id": "task-o689qm",
+        "kind": "task",
+        "title": "Location Effect",
+        "status": "done",
+        "position": {
+          "x": 408.39443705489856,
+          "y": 1271.6810346110528
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-z5t0si"
+      },
+      {
+        "id": "task-5maf5y",
+        "kind": "task",
+        "title": "Reference to already existing games, if relevant",
+        "status": "done",
+        "position": {
+          "x": 406.44549913533405,
+          "y": 1411.9278847482599
+        },
+        "description": "itch.io link",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-z5t0si"
+      },
+      {
+        "id": "group-f6f897fd",
+        "kind": "group",
+        "title": "Title Slide",
+        "status": "todo",
+        "position": {
+          "x": -264.91411445372324,
+          "y": -159.62978592983438
+        },
+        "description": "AI-generated decomposition for Title Slide.",
+        "completionCriteria": "All proposed subtasks are complete and ready to support the parent task.",
+        "tags": [],
+        "parentId": "task-hbceoz",
+        "size": {
+          "width": 320,
+          "height": 170
+        }
+      },
+      {
+        "id": "group-584bcb2e",
+        "kind": "group",
+        "title": "Mandatory Data Points (PDF-required first slide) breakdown",
+        "status": "todo",
+        "position": {
+          "x": 41.894966934746805,
+          "y": -9.045908525498259
+        },
+        "description": "AI-generated decomposition for Mandatory Data Points (PDF-required first slide).",
+        "completionCriteria": "All proposed subtasks are complete and ready to support the parent task.",
+        "tags": [],
+        "parentId": "group-f6f897fd",
+        "size": {
+          "width": 320,
+          "height": 170
+        }
+      },
+      {
+        "id": "task-c5f86112",
+        "kind": "task",
+        "title": "Project name",
+        "status": "done",
+        "position": {
+          "x": 135.50936554066902,
+          "y": -72.51120389636279
+        },
+        "description": "Capture the project name/work title exactly as it should appear on the first folio of the pitch deck.",
+        "completionCriteria": "A final project name or working title is selected and ready for title-slide placement.",
+        "tags": [],
+        "parentId": "group-584bcb2e"
+      },
+      {
+        "id": "task-86dbe44d",
+        "kind": "task",
+        "title": "Calculated prototype development costs",
+        "status": "done",
+        "position": {
+          "x": 136.6477433237032,
+          "y": 58.53413485683508
+        },
+        "description": "State the total calculated costs for developing the prototype, aligned with the application budget figures.",
+        "completionCriteria": "A single validated cost figure is available and matches the cost and financing plan.",
+        "tags": [],
+        "parentId": "group-584bcb2e"
+      },
+      {
+        "id": "task-42957686",
+        "kind": "task",
+        "title": "Requested funding amount",
+        "status": "done",
+        "position": {
+          "x": 136.656318725318,
+          "y": 194.40617083110953
+        },
+        "description": "Specify the exact funding amount being requested for the project.",
+        "completionCriteria": "The requested funding figure is finalized and consistent with the application form and budget documents.",
+        "tags": [],
+        "parentId": "group-584bcb2e"
+      },
+      {
+        "id": "task-05606bfc",
+        "kind": "task",
+        "title": "Applicant / applying company",
+        "status": "done",
+        "position": {
+          "x": 134.40528936409422,
+          "y": 329.1996523731979
+        },
+        "description": "List the applicant name(s) or the applying company exactly as required for the submission.",
+        "completionCriteria": "The legal/applicant naming is confirmed and formatted for the title slide.",
+        "tags": [],
+        "parentId": "group-584bcb2e"
+      },
+      {
+        "id": "task-abc09364",
+        "kind": "task",
+        "title": "Target platforms",
+        "status": "done",
+        "position": {
+          "x": 135.49241919789515,
+          "y": 461.4772894062815
+        },
+        "description": "Identify the intended target platforms for the prototype/project.",
+        "completionCriteria": "A finalized list of target platforms is prepared and consistent with the rest of the application.",
+        "tags": [],
+        "parentId": "group-584bcb2e"
+      },
+      {
+        "id": "task-a74f0afb",
+        "kind": "task",
+        "title": "One-sentence project description",
+        "status": "done",
+        "position": {
+          "x": 135.65473844720972,
+          "y": 594.5382182888882
+        },
+        "description": "Write the mandatory single-sentence description that explains the project succinctly on the first folio.",
+        "completionCriteria": "A clear one-sentence project description is approved for the title slide.",
+        "tags": [],
+        "parentId": "group-584bcb2e"
+      },
+      {
+        "id": "group-98861ca9",
+        "kind": "group",
+        "title": "Market Research",
+        "status": "todo",
+        "position": {
+          "x": -551.3798568820375,
+          "y": -189.0345845287353
+        },
+        "description": "AI-generated decomposition for Market Research.",
+        "completionCriteria": "All proposed subtasks are complete and ready to support the parent task.",
+        "tags": [],
+        "parentId": "task-twdjjf",
+        "size": {
+          "width": 320,
+          "height": 170
+        }
+      },
+      {
+        "id": "task-b07c425c",
+        "kind": "task",
+        "title": "Define Research Scope and Comparison Set",
+        "status": "done",
+        "position": {
+          "x": -75.90312059959513,
+          "y": -103.84286632802468
+        },
+        "description": "Specify the exact project genre/subgenre, platforms, regions, and time window starting April 2023. Establish the comparison criteria and shortlist relevant benchmark games and data sources to be used consistently in later steps.",
+        "completionCriteria": "A written scope document exists listing genre/subgenre, date range, platforms/regions, benchmark selection rules, and an initial comparison set of target games/sources approved for use.",
+        "tags": [],
+        "parentId": "group-98861ca9"
+      },
+      {
+        "id": "task-5980ef61",
+        "kind": "task",
+        "title": "Collect Sales and Revenue Data for Benchmark Titles",
+        "status": "done",
+        "position": {
+          "x": -79.53827009885843,
+          "y": 39.55906627198338
+        },
+        "description": "Gather available data for the selected comparison games over the last three years beginning April 2023, including units sold, estimated revenue, pricing history where available, and source references such as SteamDB, VG Insights, publisher reports, or store pages.",
+        "completionCriteria": "A structured dataset or spreadsheet is completed for the benchmark titles with sales/revenue fields populated where available, source links included, and obvious gaps or assumptions clearly marked.",
+        "tags": [],
+        "parentId": "group-98861ca9"
+      },
+      {
+        "id": "task-7083f4c1",
+        "kind": "task",
+        "title": "Analyze Market Performance and Build Revenue Scenarios",
+        "status": "done",
+        "position": {
+          "x": 396.47387245215515,
+          "y": -103.88226968484932
+        },
+        "description": "Use the collected dataset to identify market patterns, sales ranges, pricing norms, and performance clusters. From this analysis, produce low, mid, and high expected revenue estimates for the project with stated assumptions and rationale.",
+        "completionCriteria": "An analysis document or worksheet exists showing key findings from the benchmark data plus low/mid/high revenue estimates tied to explicit assumptions and comparable titles.",
+        "tags": [],
+        "parentId": "group-98861ca9"
+      },
+      {
+        "id": "task-1e2bc7f5",
+        "kind": "task",
+        "title": "Draft Market Strategy",
+        "status": "done",
+        "position": {
+          "x": 395.889035109611,
+          "y": 39.251311494759946
+        },
+        "description": "Based on the analysis, define a market strategy covering target price, intended audience segments, and the main audience tropes or motivations relevant to the project’s genre/subgenre.",
+        "completionCriteria": "A strategy draft is written that states recommended target price, target audience, and audience tropes, with each recommendation traceable to the market analysis.",
+        "tags": [],
+        "parentId": "group-98861ca9"
+      },
+      {
+        "id": "task-b55d074b",
+        "kind": "task",
+        "title": "Compile Final Market Research Summary",
+        "status": "done",
+        "position": {
+          "x": 833.8404815822826,
+          "y": -107.56201356698806
+        },
+        "description": "Combine the scope, dataset, analysis, revenue scenarios, and market strategy into a concise final summary suitable for the funding application and adjacent materials like the pitch deck or additional project description.",
+        "completionCriteria": "A final market research summary/report is delivered that references the prior analysis and strategy draft, presents the core findings clearly, and is ready to reuse in the funding application package.",
+        "tags": [],
+        "parentId": "group-98861ca9"
+      },
+      {
+        "id": "group-064cf2d5",
+        "kind": "group",
+        "title": "Reference Material breakdown",
+        "status": "todo",
+        "position": {
+          "x": 63.0170462141169,
+          "y": 224.24298881178703
+        },
+        "description": "AI-generated decomposition for Reference Material.",
+        "completionCriteria": "All proposed subtasks are complete and ready to support the parent task.",
+        "tags": [],
+        "parentId": "task-twdjjf",
+        "size": {
+          "width": 320,
+          "height": 170
+        }
+      },
+      {
+        "id": "task-7211ca26",
+        "kind": "task",
+        "title": "Audit existing visual material from Pitch Deck and project docs",
+        "status": "done",
+        "position": {
+          "x": -351.63915204125476,
+          "y": 177.76309355627131
+        },
+        "description": "Review the Pitch Deck and Additional Project Description to identify the strongest existing visuals, presentation themes, and any already-mentioned reference assets that should be expanded in the reference package.",
+        "completionCriteria": "A reviewed shortlist exists that names the key visuals/themes to build on, with source links or slide/page references from the Pitch Deck and Additional Project Description.",
+        "tags": [],
+        "parentId": "group-064cf2d5"
+      },
+      {
+        "id": "task-ee3fe8f2",
+        "kind": "task",
+        "title": "Collect and categorize reference assets",
+        "status": "done",
+        "position": {
+          "x": -49.929539099514926,
+          "y": 178.37769071115753
+        },
+        "description": "Gather mood boards, screenshots, videos, demos, graphics, animations, and other visual references that communicate the intended look, feel, and presentation of the project. Organize them by category and relevance to the application narrative.",
+        "completionCriteria": "A structured reference library exists with assets grouped into clear categories (e.g. mood, UI, animation, world, presentation), and each item is stored or linked in an accessible location.",
+        "tags": [],
+        "parentId": "group-064cf2d5"
+      },
+      {
+        "id": "task-2d8901e1",
+        "kind": "task",
+        "title": "Label asset provenance and usage type",
+        "status": "done",
+        "position": {
+          "x": 235.64633170764216,
+          "y": 180.55928223994243
+        },
+        "description": "For every collected item, mark whether it is a project-original asset, external inspirational reference, or generative-AI-created content. Add basic source and rights/context notes where relevant so the package is transparent and compliant.",
+        "completionCriteria": "Every asset in the library has a visible provenance label and source note, with no unlabeled items remaining.",
+        "tags": [],
+        "parentId": "group-064cf2d5"
+      },
+      {
+        "id": "task-4553c6d8",
+        "kind": "task",
+        "title": "Assemble the application-ready reference package",
+        "status": "done",
+        "position": {
+          "x": 520.0083068680756,
+          "y": 179.60688502092995
+        },
+        "description": "Curate the strongest materials into a clean package tailored for the Gamecity Hamburg application, ensuring the selection supports the project’s intended visual identity and complements the Pitch Deck and Additional Project Description.",
+        "completionCriteria": "A final reference package exists in a shareable format (e.g. folder, board, or PDF) containing the selected assets in presentation order, ready to attach or reference in the application.",
+        "tags": [],
+        "parentId": "group-064cf2d5"
+      },
+      {
+        "id": "group-75778efa",
+        "kind": "group",
+        "title": "Crowdfunding",
+        "status": "todo",
+        "position": {
+          "x": 1136.225401329264,
+          "y": -107.85271154358881
+        },
+        "description": "AI-generated decomposition for Crowdfunding.",
+        "completionCriteria": "All proposed subtasks are complete and ready to support the parent task.",
+        "tags": [],
+        "parentId": null,
+        "size": {
+          "width": 320,
+          "height": 170
+        }
+      },
+      {
+        "id": "task-4fc85e66",
+        "kind": "task",
+        "title": "Validate Kickstarter fit and funding strategy",
+        "status": "todo",
+        "position": {
+          "x": -180.62448495090823,
+          "y": 62
+        },
+        "description": "Assess whether Echo is a strong Kickstarter candidate using the notes' criteria: engaged fanbase, underserved genre/community, demonstrable concept, playable demo readiness, and a realistic funding scope focused on extending an existing base rather than funding the whole game. Define the campaign goal, what the funds will cover, and clear go/no-go thresholds.",
+        "completionCriteria": "A written Kickstarter brief exists covering campaign fit, funding purpose, target amount rationale, go/no-go thresholds, and a decision on whether to proceed.",
+        "tags": [],
+        "parentId": "group-75778efa"
+      },
+      {
+        "id": "task-f2fdf78f",
+        "kind": "task",
+        "title": "Build pre-launch audience funnel and traction metrics",
+        "status": "todo",
+        "position": {
+          "x": 330,
+          "y": 234
+        },
+        "description": "Set up the pre-launch audience capture system: Kickstarter Coming Soon page, newsletter/email capture, landing page or website updates, and outreach hooks for community building. Track traction indicators from the notes, especially follower/email growth and whether projected launch support can reach early momentum targets.",
+        "completionCriteria": "The Coming Soon page and email capture are live, traffic is being directed to them, and a visible traction dashboard or tracker shows follower/email counts against launch thresholds.",
+        "tags": [],
+        "parentId": "group-75778efa"
+      },
+      {
+        "id": "task-01ff5c9d",
+        "kind": "task",
+        "title": "Prepare campaign materials, demo, and reward structure",
+        "status": "todo",
+        "position": {
+          "x": 358,
+          "y": -18
+        },
+        "description": "Create the campaign package: playable demo, campaign page copy, trailer/visual assets, reward tiers, FAQ, and risk framing. Keep rewards digital/lightweight, avoid costly physical rewards and dangerous stretch goals, and ensure the page clearly shows what backers get and why the project is credible.",
+        "completionCriteria": "A reviewable campaign draft exists with final copy/assets, a playable demo ready for backers/public use, and a reward table with estimated delivery effort and no unresolved stretch-goal risks.",
+        "tags": [],
+        "parentId": "group-75778efa"
+      },
+      {
+        "id": "task-711680e9",
+        "kind": "task",
+        "title": "Run pre-launch validation and launch plan",
+        "status": "todo",
+        "position": {
+          "x": 798,
+          "y": 144
+        },
+        "description": "Use the audience and materials to test readiness: gather feedback from trusted fans, estimate day-1 backing potential, line up launch communications, and contact Kickstarter's games team if appropriate. Decide whether to launch, delay, or cancel based on traction and the ability to hit strong early momentum.",
+        "completionCriteria": "A launch readiness checklist is completed, day-1 outreach/messages are scheduled, and a documented go/delay/cancel decision is made based on visible pre-launch traction and feedback.",
+        "tags": [],
+        "parentId": "group-75778efa"
+      },
+      {
+        "id": "task-1797feb3",
+        "kind": "task",
+        "title": "Launch the Kickstarter campaign",
+        "status": "todo",
+        "position": {
+          "x": 1199,
+          "y": 134
+        },
+        "description": "Publish the Kickstarter campaign and execute the coordinated launch push across email, community, and social channels to maximize the first 48 hours.",
+        "completionCriteria": "The Kickstarter campaign is live and launch announcements have been sent across the planned channels.",
+        "tags": [],
+        "parentId": "group-75778efa"
+      },
+      {
+        "id": "task-wy13lp",
+        "kind": "task",
+        "title": "Competitor Analysis",
+        "status": "done",
+        "position": {
+          "x": 242.43585491892128,
+          "y": -135.98861988894095
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-hbceoz"
+      },
+      {
+        "id": "task-1omxaw",
+        "kind": "task",
+        "title": "Kosten und Finanzierungsplan",
+        "status": "done",
+        "position": {
+          "x": 79.5540068456869,
+          "y": 434.65126190257826
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-twdjjf"
+      },
+      {
+        "id": "task-ckexqr",
+        "kind": "task",
+        "title": "Further development",
+        "status": "todo",
+        "position": {
+          "x": 1548,
+          "y": -108
+        },
+        "description": "Develop new Levels, Game Modes, Assets, Upgrades, Cosmetics etc",
+        "completionCriteria": "",
+        "tags": [
+          "Release.Full"
+        ]
+      },
+      {
+        "id": "task-cp1ioc",
+        "kind": "task",
+        "title": "Pitch Deck: Review & Polish",
+        "status": "done",
+        "position": {
+          "x": 517.5180884736762,
+          "y": -160.34819099457593
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-twdjjf"
+      },
+      {
+        "id": "task-s5eyks",
+        "kind": "task",
+        "title": "Additional Material: Review & Polish",
+        "status": "done",
+        "position": {
+          "x": 519.5180884736762,
+          "y": 43.65180900542407
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-twdjjf"
+      },
+      {
+        "id": "task-8f8g74",
+        "kind": "group",
+        "title": "Funding Application",
+        "status": "todo",
+        "position": {
+          "x": 1019.8011844346096,
+          "y": 92.06337895690612
+        },
+        "description": "the actual application. this task only taks about handing in every document necessary",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-twdjjf",
+        "size": {
+          "width": 310,
+          "height": 160
+        }
+      },
+      {
+        "id": "task-ico356",
+        "kind": "task",
+        "title": "Fill Online Form",
+        "status": "done",
+        "position": {
+          "x": 350.6891295515702,
+          "y": 256.0053639140041
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-8f8g74"
+      },
+      {
+        "id": "task-2dt99g",
+        "kind": "task",
+        "title": "Pitch Deck",
+        "status": "done",
+        "position": {
+          "x": -220.6393285515923,
+          "y": -551.9399586855855
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-8f8g74"
+      },
+      {
+        "id": "task-dp13ji",
+        "kind": "task",
+        "title": "Additial Project Description",
+        "status": "done",
+        "position": {
+          "x": -217.91875327835479,
+          "y": -419.8395855512663
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-8f8g74"
+      },
+      {
+        "id": "task-d7mo17",
+        "kind": "task",
+        "title": "Reference Material",
+        "status": "done",
+        "position": {
+          "x": -218.7620339223794,
+          "y": -289.9589532795619
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-8f8g74"
+      },
+      {
+        "id": "task-iuu0ys",
+        "kind": "task",
+        "title": "Kosten und Finanzierungsplan",
+        "status": "done",
+        "position": {
+          "x": -222.04145864914187,
+          "y": -157.5774865972346
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-8f8g74"
+      },
+      {
+        "id": "task-vciyfz",
+        "kind": "task",
+        "title": "Proof of own Funds",
+        "status": "done",
+        "position": {
+          "x": -222.7586962798879,
+          "y": -22.22753066822702
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-8f8g74"
+      },
+      {
+        "id": "task-eye8z3",
+        "kind": "task",
+        "title": "Diversity Checklist",
+        "status": "done",
+        "position": {
+          "x": -218.66499843055183,
+          "y": 114.30982095945251
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-8f8g74"
+      },
+      {
+        "id": "task-dqyr2h",
+        "kind": "task",
+        "title": "Data protection",
+        "status": "done",
+        "position": {
+          "x": -223.2885382119618,
+          "y": 249.8480069977552
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-8f8g74"
+      },
+      {
+        "id": "task-nshsda",
+        "kind": "task",
+        "title": "De-minimis Declaration",
+        "status": "done",
+        "position": {
+          "x": -220.44525756793718,
+          "y": 390.85301346149254
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-8f8g74"
+      },
+      {
+        "id": "task-830xrf",
+        "kind": "task",
+        "title": "Declaration of Funding",
+        "status": "done",
+        "position": {
+          "x": -220.38056724005213,
+          "y": 529.3895306785494
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-8f8g74"
+      },
+      {
+        "id": "task-j04tux",
+        "kind": "group",
+        "title": "Refactor",
+        "status": "todo",
+        "position": {
+          "x": 543.3149909944392,
+          "y": -171.32135385875918
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-xlmd80",
+        "size": {
+          "width": 360,
+          "height": 180
+        }
+      },
+      {
+        "id": "task-qlphp2",
+        "kind": "group",
+        "title": "GAS",
+        "status": "todo",
+        "position": {
+          "x": 977.7580068829643,
+          "y": -170.17059439626576
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-xlmd80",
+        "size": {
+          "width": 360,
+          "height": 180
+        }
+      },
+      {
+        "id": "task-jw5b8z",
+        "kind": "task",
+        "title": "Plan subtask",
+        "status": "todo",
+        "position": {
+          "x": 80,
+          "y": 120
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-qlphp2"
+      },
+      {
+        "id": "task-qnet20",
+        "kind": "task",
+        "title": "Build subtask",
+        "status": "todo",
+        "position": {
+          "x": 190,
+          "y": 120
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-qlphp2"
+      },
+      {
+        "id": "task-mn696e",
+        "kind": "task",
+        "title": "Review subtask",
+        "status": "todo",
+        "position": {
+          "x": 300,
+          "y": 120
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-qlphp2"
+      },
+      {
+        "id": "task-si2i5o",
+        "kind": "task",
+        "title": "GMC Setup",
+        "status": "todo",
+        "position": {
+          "x": 714.3448891127128,
+          "y": -248.76840770053374
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "gmc-setup"
+      },
+      {
+        "id": "task-0n1ah4",
+        "kind": "task",
+        "title": "Buy GMC",
+        "status": "todo",
+        "position": {
+          "x": 240.34383529204047,
+          "y": -234.40473940293765
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "gmc-setup"
+      },
+      {
+        "id": "task-69b5fy",
+        "kind": "task",
+        "title": "Character Controller",
+        "status": "todo",
+        "position": {
+          "x": 601.2694856090169,
+          "y": -226.75893237785806
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-j04tux"
+      },
+      {
+        "id": "gmc-setup",
+        "kind": "group",
+        "title": "GMC",
+        "status": "todo",
+        "position": {
+          "x": 1410.0595328059771,
+          "y": -174.45828836653615
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "task-xlmd80",
+        "size": {
+          "width": 360,
+          "height": 180
+        }
+      },
+      {
+        "id": "task-10299e97",
+        "kind": "task",
+        "title": "Prepare funding pitch deck and talk track",
+        "status": "todo",
+        "position": {
+          "x": 72,
+          "y": -54
+        },
+        "description": "Create the actual funding pitch package based on the funding application: a concise pitch deck plus presenter notes that clearly communicate the game concept, why it is easily demonstrable, current audience traction, launch momentum plan, demo readiness, funding ask, and a restrained approach to stretch goals/reward promises.",
+        "completionCriteria": "A complete pitch artifact exists with a slide deck and matching talk track/script, aligned to the funding application, including sections for concept, audience evidence, momentum/first-48-hours plan, playable/demo status, funding use, and risk-aware stretch-goal positioning; the materials are ready for internal review or rehearsal.",
+        "tags": [],
+        "parentId": null
+      },
+      {
+        "id": "task-n0fvf7",
+        "kind": "task",
+        "title": "New task 8",
+        "status": "todo",
+        "position": {
+          "x": 60,
+          "y": 80
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": [],
+        "parentId": "group-75778efa"
+      },
+      {
+        "id": "task-l22q35",
+        "kind": "task",
+        "title": "New task 8",
+        "status": "todo",
+        "position": {
+          "x": 414,
+          "y": 288
+        },
+        "description": "",
+        "completionCriteria": "",
+        "tags": []
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-63lz4z",
+        "source": "task-7083f4c1",
+        "target": "task-b55d074b"
+      },
+      {
+        "id": "edge-4dgy6w",
+        "source": "task-1e2bc7f5",
+        "target": "task-b55d074b"
+      },
+      {
+        "id": "edge-mkqdr5",
+        "source": "task-b07c425c",
+        "target": "task-7083f4c1"
+      },
+      {
+        "id": "edge-5ehjlw",
+        "source": "task-5980ef61",
+        "target": "task-7083f4c1"
+      },
+      {
+        "id": "edge-oy2kcd",
+        "source": "task-b07c425c",
+        "target": "task-1e2bc7f5"
+      },
+      {
+        "id": "edge-6pegs7",
+        "source": "task-5980ef61",
+        "target": "task-1e2bc7f5"
+      },
+      {
+        "id": "edge-ibmqaw",
+        "source": "group-98861ca9",
+        "target": "task-hbceoz"
+      },
+      {
+        "id": "edge-41m5ak",
+        "source": "group-98861ca9",
+        "target": "task-z5t0si"
+      },
+      {
+        "id": "edge-6d28d07c",
+        "source": "task-4fc85e66",
+        "target": "task-f2fdf78f"
+      },
+      {
+        "id": "edge-7669b0eb",
+        "source": "task-4fc85e66",
+        "target": "task-01ff5c9d"
+      },
+      {
+        "id": "edge-fa1ab7bc",
+        "source": "task-f2fdf78f",
+        "target": "task-711680e9"
+      },
+      {
+        "id": "edge-5d454669",
+        "source": "task-01ff5c9d",
+        "target": "task-711680e9"
+      },
+      {
+        "id": "edge-aa48995c",
+        "source": "task-711680e9",
+        "target": "task-1797feb3"
+      },
+      {
+        "id": "edge-fv4ig5",
+        "source": "group-98861ca9",
+        "target": "group-064cf2d5"
+      },
+      {
+        "id": "edge-vvaj3v",
+        "source": "task-7211ca26",
+        "target": "task-ee3fe8f2"
+      },
+      {
+        "id": "edge-gxunfg",
+        "source": "task-ee3fe8f2",
+        "target": "task-2d8901e1"
+      },
+      {
+        "id": "edge-y39bnb",
+        "source": "task-2d8901e1",
+        "target": "task-4553c6d8"
+      },
+      {
+        "id": "edge-o68gfu",
+        "source": "task-xlmd80",
+        "target": "group-75778efa"
+      },
+      {
+        "id": "edge-grf3wu",
+        "source": "task-bsism6",
+        "target": "task-j1jsdl"
+      },
+      {
+        "id": "edge-rqw741",
+        "source": "group-98861ca9",
+        "target": "task-1omxaw"
+      },
+      {
+        "id": "edge-yc23ya",
+        "source": "task-dagwv6",
+        "target": "task-70vbem"
+      },
+      {
+        "id": "edge-3hn1b4",
+        "source": "task-ckexqr",
+        "target": "task-j1jsdl"
+      },
+      {
+        "id": "edge-otx5dq",
+        "source": "task-hbceoz",
+        "target": "task-cp1ioc"
+      },
+      {
+        "id": "edge-j88nsi",
+        "source": "task-z5t0si",
+        "target": "task-s5eyks"
+      },
+      {
+        "id": "edge-6cup8z",
+        "source": "task-830xrf",
+        "target": "task-ico356"
+      },
+      {
+        "id": "edge-gpx5y7",
+        "source": "task-nshsda",
+        "target": "task-ico356"
+      },
+      {
+        "id": "edge-yohh0g",
+        "source": "task-dqyr2h",
+        "target": "task-ico356"
+      },
+      {
+        "id": "edge-f6ryus",
+        "source": "task-eye8z3",
+        "target": "task-ico356"
+      },
+      {
+        "id": "edge-nlazsn",
+        "source": "task-vciyfz",
+        "target": "task-ico356"
+      },
+      {
+        "id": "edge-mvyr9s",
+        "source": "task-iuu0ys",
+        "target": "task-ico356"
+      },
+      {
+        "id": "edge-0mp2z0",
+        "source": "task-d7mo17",
+        "target": "task-ico356"
+      },
+      {
+        "id": "edge-wahryb",
+        "source": "task-dp13ji",
+        "target": "task-ico356"
+      },
+      {
+        "id": "edge-srfnw7",
+        "source": "task-2dt99g",
+        "target": "task-ico356"
+      },
+      {
+        "id": "edge-0sozx1",
+        "source": "task-1omxaw",
+        "target": "task-8f8g74"
+      },
+      {
+        "id": "edge-a4l6j6",
+        "source": "task-cp1ioc",
+        "target": "task-8f8g74"
+      },
+      {
+        "id": "edge-srykzw",
+        "source": "group-064cf2d5",
+        "target": "task-8f8g74"
+      },
+      {
+        "id": "edge-9h5x1g",
+        "source": "task-s5eyks",
+        "target": "task-8f8g74"
+      },
+      {
+        "id": "edge-un5rir",
+        "source": "group-75778efa",
+        "target": "task-ckexqr"
+      },
+      {
+        "id": "edge-se81tx",
+        "source": "task-j04tux",
+        "target": "task-qlphp2"
+      },
+      {
+        "id": "edge-9w70uv",
+        "source": "task-0n1ah4",
+        "target": "task-si2i5o"
+      },
+      {
+        "id": "edge-eu3kdn",
+        "source": "task-qlphp2",
+        "target": "gmc-setup"
+      },
+      {
+        "id": "edge-by12sw",
+        "source": "task-twdjjf",
+        "target": "task-10299e97"
+      },
+      {
+        "id": "edge-u4wzvc",
+        "source": "task-10299e97",
+        "target": "task-xlmd80"
+      }
+    ]
+  },
+  "ui": {
+    "openTabs": [
+      {
+        "id": "main",
+        "kind": "main"
+      },
+      {
+        "id": "ai-graph",
+        "kind": "system"
+      }
+    ],
+    "activeTabId": "main",
+    "selectedNodeId": "task-l22q35"
+  }
+}

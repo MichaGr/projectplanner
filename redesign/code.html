@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Lucid Architect - Project Management Graph</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "mint": "#A7F3D0",
+              "mint-container": "#065F46",
+              "yellow": "#FDE68A",
+              "yellow-container": "#78350F",
+              "purple": "#D8B4FE",
+              "purple-container": "#581C87",
+              "rose": "#FDA4AF",
+              "rose-container": "#881337",
+              "tertiary-fixed": "#a3d4fd",
+              "outline": "#6d7684",
+              "on-surface": "#dde6f7",
+              "primary-fixed-dim": "#D8B4FE",
+              "error-dim": "#FDA4AF",
+              "on-tertiary-fixed": "#003652",
+              "error-container": "#881337",
+              "on-primary-fixed": "#000000",
+              "secondary": "#bfc7d3",
+              "secondary-fixed": "#dbe3ef",
+              "on-primary": "#2E1065",
+              "on-secondary": "#39414b",
+              "inverse-primary": "#581C87",
+              "on-secondary-container": "#b8c0cc",
+              "inverse-on-surface": "#51555c",
+              "outline-variant": "#404856",
+              "on-tertiary-fixed-variant": "#1c5376",
+              "on-background": "#dde6f7",
+              "surface-container": "#141a23",
+              "primary-dim": "#D8B4FE",
+              "background": "#0a0e14",
+              "inverse-surface": "#f8f9ff",
+              "tertiary-container": "#A7F3D0",
+              "primary": "#D8B4FE",
+              "primary-fixed": "#D8B4FE",
+              "surface-tint": "#D8B4FE",
+              "on-secondary-fixed": "#38404a",
+              "tertiary-dim": "#A7F3D0",
+              "secondary-dim": "#b1b9c5",
+              "surface-container-low": "#0e141c",
+              "on-surface-variant": "#a3abbb",
+              "on-error": "#490006",
+              "secondary-fixed-dim": "#cdd5e1",
+              "on-tertiary": "#064E3B",
+              "tertiary": "#A7F3D0",
+              "secondary-container": "#343c46",
+              "on-secondary-fixed-variant": "#545c66",
+              "surface-container-high": "#19202a",
+              "surface-bright": "#242d39",
+              "surface-variant": "#1e2632",
+              "on-primary-fixed-variant": "#4C1D95",
+              "primary-container": "#581C87",
+              "surface-dim": "#0a0e14",
+              "on-tertiary-container": "#D1FAE5",
+              "tertiary-fixed-dim": "#A7F3D0",
+              "surface-container-highest": "#1e2632",
+              "on-error-container": "#FFE4E6",
+              "surface-container-lowest": "#000000",
+              "on-primary-container": "#F5F3FF",
+              "surface": "#0a0e14",
+              "error": "#FDA4AF"
+            },
+            fontFamily: {
+              "headline": ["Space Grotesk"],
+              "body": ["Space Grotesk"],
+              "label": ["Space Grotesk"]
+            },
+            borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        body { font-family: 'Space Grotesk', sans-serif; }
+        .node-connector {
+            background-image: radial-gradient(circle, #404856 1px, transparent 1px);
+            background-size: 24px 24px;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface overflow-hidden h-screen flex flex-col font-['Space_Grotesk']">
+<!-- Top Navigation Bar -->
+<header class="flex items-center justify-between px-6 w-full sticky top-0 z-50 bg-[#0a0e14] border-b border-[#1e2632]/30 h-16 antialiased tracking-tight text-sm">
+<div class="flex items-center gap-8">
+<span class="text-lg font-semibold tracking-[-0.02em] text-[#f8fafc]">Lucid Architect</span>
+<div class="relative group">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-base">search</span>
+<input class="bg-surface-container-lowest border-none rounded-lg pl-10 pr-4 py-1.5 text-xs w-64 focus:ring-1 focus:ring-purple/40 transition-all" placeholder="Search workspace..." type="text"/>
+</div>
+</div>
+<nav class="flex items-center gap-8">
+<a class="text-[#a3abbb] hover:text-[#f8fafc] transition-colors" href="#">Dashboard</a>
+<a class="text-purple border-b-2 border-purple pb-5 mt-5" href="#">Graph View</a>
+<a class="text-[#a3abbb] hover:text-[#f8fafc] transition-colors" href="#">Timeline</a>
+<a class="text-[#a3abbb] hover:text-[#f8fafc] transition-colors" href="#">Reports</a>
+</nav>
+<div class="flex items-center gap-4">
+<button class="bg-purple text-purple-container px-4 py-1.5 rounded-lg font-bold hover:brightness-110 transition-all active:scale-95">Share</button>
+<div class="flex items-center gap-2">
+<button class="p-2 text-on-surface-variant hover:bg-white/5 rounded-md transition-all">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:bg-white/5 rounded-md transition-all">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<div class="w-8 h-8 rounded-full overflow-hidden ml-2 border border-outline-variant">
+<img alt="User profile" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDuTaFKYClYC3eu0hGcggjlvYoNEydJrVFp6eFSXtIWkc4sjgJ0TozYSnZHTKq7V4R-MpfteBdGlLycHNyoR_xZ5buL9xT5hW_3vw6dpO4tuwOoUP9-5Cn1wUkdZr7_e75uvw7WHKrf7VGDOQ7hEi8PlomVBXWYE_Dp027QDN7MlI15XtvTF2Crb6PqHcIEoKq25JbBxEP53qIymDAzbpEteDoDI1hBoEVx6ZhKGSbOHRpRLTenFrEkQrK4W-bGb0LzynrLb7uEhT8"/>
+</div>
+</div>
+</div>
+</header>
+<div class="flex flex-1 overflow-hidden">
+<!-- Side Navigation Bar -->
+<aside class="h-full w-64 flex flex-col bg-[#0e141c] border-r border-[#1e2632]/20 shadow-[4px_0_24px_rgba(0,0,0,0.3)] py-6 z-40">
+<div class="px-6 mb-8">
+<div class="flex items-center gap-3 mb-6">
+<div class="w-8 h-8 bg-purple rounded-lg flex items-center justify-center">
+<span class="material-symbols-outlined text-purple-container">architecture</span>
+</div>
+<div>
+<div class="text-[#f8fafc] font-bold text-xs uppercase tracking-widest">Main Engine</div>
+<div class="text-on-surface-variant text-[10px]">v2.4.0-stable</div>
+</div>
+</div>
+<button class="w-full bg-surface-container-highest text-purple py-2 rounded-lg flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-wider hover:bg-surface-bright transition-all">
+<span class="material-symbols-outlined text-sm">add</span> New Node
+            </button>
+</div>
+<nav class="flex-1 px-4 space-y-1">
+<div class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-[#141a23] text-purple border-r-2 border-purple cursor-pointer">
+<span class="material-symbols-outlined text-xl">account_tree</span>
+<span class="text-xs font-medium uppercase tracking-widest">Projects</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-[#a3abbb] hover:bg-[#141a23]/50 hover:text-[#f8fafc] transition-all duration-300 cursor-pointer">
+<span class="material-symbols-outlined text-xl">bubble_chart</span>
+<span class="text-xs font-medium uppercase tracking-widest">Nodes</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-[#a3abbb] hover:bg-[#141a23]/50 hover:text-[#f8fafc] transition-all duration-300 cursor-pointer">
+<span class="material-symbols-outlined text-xl">inventory_2</span>
+<span class="text-xs font-medium uppercase tracking-widest">Assets</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-[#a3abbb] hover:bg-[#141a23]/50 hover:text-[#f8fafc] transition-all duration-300 cursor-pointer">
+<span class="material-symbols-outlined text-xl">group</span>
+<span class="text-xs font-medium uppercase tracking-widest">Team</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-[#a3abbb] hover:bg-[#141a23]/50 hover:text-[#f8fafc] transition-all duration-300 cursor-pointer">
+<span class="material-symbols-outlined text-xl">history</span>
+<span class="text-xs font-medium uppercase tracking-widest">Archive</span>
+</div>
+</nav>
+<div class="px-4 pt-6 mt-6 border-t border-outline-variant/10">
+<div class="flex items-center gap-3 px-3 py-2 text-[#a3abbb] hover:text-[#f8fafc] transition-all cursor-pointer">
+<span class="material-symbols-outlined text-xl">help_outline</span>
+<span class="text-xs font-medium uppercase tracking-widest">Help</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 text-[#a3abbb] hover:text-[#f8fafc] transition-all cursor-pointer">
+<span class="material-symbols-outlined text-xl">chat_bubble_outline</span>
+<span class="text-xs font-medium uppercase tracking-widest">Feedback</span>
+</div>
+</div>
+</aside>
+<!-- Main Workspace (Graph View) -->
+<main class="flex-1 relative node-connector bg-background overflow-hidden">
+<!-- Graph Navigation Console -->
+<div class="absolute bottom-8 left-8 z-20 flex gap-2 bg-surface-bright/60 backdrop-blur-md p-1.5 rounded-xl border border-white/5">
+<button class="p-2 hover:bg-white/10 rounded-lg text-on-surface"><span class="material-symbols-outlined">add</span></button>
+<button class="p-2 hover:bg-white/10 rounded-lg text-on-surface"><span class="material-symbols-outlined">remove</span></button>
+<div class="w-[1px] bg-white/10 mx-1"></div>
+<button class="p-2 hover:bg-white/10 rounded-lg text-on-surface"><span class="material-symbols-outlined">center_focus_strong</span></button>
+<button class="p-2 hover:bg-white/10 rounded-lg text-on-surface"><span class="material-symbols-outlined">layers</span></button>
+</div>
+<!-- Graph Canvas -->
+<div class="absolute inset-0 p-20 flex items-center justify-center">
+<svg class="absolute inset-0 w-full h-full pointer-events-none opacity-20">
+<path d="M 400 400 L 700 350" fill="none" stroke="#D8B4FE" stroke-width="2"></path>
+<path d="M 700 350 L 1000 400" fill="none" stroke="#D8B4FE" stroke-dasharray="4" stroke-width="2"></path>
+<path d="M 700 350 L 850 200" fill="none" stroke="#D8B4FE" stroke-width="2"></path>
+</svg>
+<div class="relative w-full h-full">
+<!-- Funding Node -->
+<div class="absolute top-[40%] left-[15%] w-64 bg-surface-container border border-outline-variant/20 rounded-xl p-4 shadow-xl">
+<div class="flex justify-between items-start mb-4">
+<span class="text-[10px] font-bold uppercase tracking-widest text-mint">Phase 01</span>
+<span class="material-symbols-outlined text-on-surface-variant text-sm">more_vert</span>
+</div>
+<h3 class="text-on-surface font-semibold mb-1">Funding</h3>
+<p class="text-on-surface-variant text-[11px] mb-4">Seed round &amp; investor relations.</p>
+<div class="flex items-center justify-between text-[10px] mb-1.5">
+<span class="text-on-surface-variant">Progress</span>
+<span class="text-mint">100%</span>
+</div>
+<div class="h-1 bg-surface-container-highest rounded-full overflow-hidden">
+<div class="h-full bg-mint w-full"></div>
+</div>
+</div>
+<!-- Vertical Slice Node (Selected/Active) -->
+<div class="absolute top-[30%] left-[45%] w-72 bg-surface-container-high border-2 border-purple/40 rounded-xl p-5 shadow-2xl ring-4 ring-purple/5">
+<div class="flex justify-between items-start mb-4">
+<span class="text-[10px] font-bold uppercase tracking-widest text-purple">Current Sprint</span>
+<span class="material-symbols-outlined text-purple text-sm">radio_button_checked</span>
+</div>
+<h3 class="text-on-surface font-bold text-lg mb-1 tracking-tight">Echo</h3>
+<p class="text-on-surface-variant text-xs mb-5">Vertical slice production for internal review.</p>
+<div class="flex items-center justify-between text-[10px] mb-2">
+<span class="text-on-surface-variant uppercase font-medium">Assets Ready</span>
+<span class="text-mint font-bold">12 / 18</span>
+</div>
+<div class="h-1.5 bg-surface-container-lowest rounded-full overflow-hidden">
+<div class="h-full bg-gradient-to-r from-mint to-mint-container w-[65%]"></div>
+</div>
+<div class="mt-4 flex -space-x-2">
+<img alt="avatar" class="w-6 h-6 rounded-full border-2 border-surface-container-high" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB5PgrPxKGW3iuc9_SfnE8s4sJBZL8Io2f3s1iCTaWWxdP1aqbaeFlYwjgnbXR7GG-_YSViPTuTTfnKT9r3oS7fdv0S6p6HezBhMaB0BpwcUWKcEpVOaco6aKX6a5GDAEAzJzI3ctJb-ZvHqj0msRpVzh9WxPecvmvcpHsW2NxzrwpVr-y_XpNkiihmvwrzmW3ntInYyBK_7cSRLvldTE7wJ3Li9mSsZMe1GESGGX3Y5RJpbrtPSUmP3acr9E1Pew7y9Xc4pMUV3OM"/>
+<img alt="avatar" class="w-6 h-6 rounded-full border-2 border-surface-container-high" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDiSd4K_pqbPAa0VJ-xDxGudqgJIrztfRC5KKb0lbfcWvl-YWJDaPPp5uxmDADRWUjiP1JnknPJzDq8Z53XNnci6XxiT-W_qI9DR2FlbDl8JZ3bt8A2Ld3-8YY4NLpUI1q-oIT-iTKdFuI8drDfVcecJ6bxYsdW_K3lgc6LgAMRaOCcgfKYRFQYs53IrdiMaNDSwjluF9ardsEhwJDJhLrs2q6JYG0wcz4d98tapzdjxxATSh5e6xxPjXyUJAMtXlxYPQBdDLcSrKs"/>
+<img alt="avatar" class="w-6 h-6 rounded-full border-2 border-surface-container-high" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBVxZWiEXDujjjmh093TEgfcbcWg_PY4x96et3drRAdxUODfi62H2sJZtncN6OTtluBvc8L3MiwFPI3P0jJLV_pYIVQPFh457OiYimZJ3zZz8gPst6IrzcrxhkpW5r2GdLH3xHeLNo_pNDl9zbYu97H6Y_qsSRJv5ifeAdGEXtOaB8T67KNZPmEmfS1bk7C_w6CHDZ1JwcTjfrm-tOp1ZTD8CqpWLg_bQned91G7uVEMwIHjg4jWeOBIbId_vcuRSqwXdB4_hkBJoo"/>
+<div class="w-6 h-6 rounded-full bg-surface-container-highest border-2 border-surface-container-high flex items-center justify-center text-[8px]">+2</div>
+</div>
+</div>
+<!-- Crowdfunding Node (Blocked) -->
+<div class="absolute top-[10%] left-[70%] w-64 bg-surface-container border border-rose/30 rounded-xl p-4 shadow-xl opacity-90 ring-1 ring-rose/10">
+<div class="flex justify-between items-start mb-4">
+<span class="text-[10px] font-bold uppercase tracking-widest text-rose">Blocked</span>
+<span class="material-symbols-outlined text-rose text-sm">warning</span>
+</div>
+<h3 class="text-on-surface font-semibold mb-1">Crowdfunding</h3>
+<p class="text-on-surface-variant text-[11px] mb-4">Pending legal approval for campaign.</p>
+<div class="bg-rose-container/20 p-2 rounded text-[10px] text-rose">
+                        Waiting for: <span class="underline decoration-rose/40">Legal_Audit_v2.pdf</span>
+</div>
+</div>
+<!-- Future Node -->
+<div class="absolute top-[45%] left-[75%] w-64 bg-surface-container border border-outline-variant/10 rounded-xl p-4 shadow-lg opacity-40">
+<div class="flex justify-between items-start mb-4">
+<span class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Planned</span>
+</div>
+<h3 class="text-on-surface font-semibold mb-1">Further Development</h3>
+<p class="text-on-surface-variant text-[11px]">Post-funding expansion phase.</p>
+</div>
+</div>
+</div>
+</main>
+<!-- Right Side Properties Panel -->
+<aside class="w-80 h-full bg-surface-container-low border-l border-outline-variant/10 overflow-y-auto z-40">
+<div class="p-6">
+<div class="flex items-center justify-between mb-8">
+<h2 class="text-on-surface font-bold tracking-tight">Node Properties</h2>
+<button class="text-on-surface-variant hover:text-on-surface"><span class="material-symbols-outlined">close</span></button>
+</div>
+<div class="space-y-8">
+<!-- Title & Identity -->
+<section>
+<div class="flex items-center gap-3 mb-4">
+<div class="w-10 h-10 bg-purple/10 text-purple rounded-xl flex items-center justify-center">
+<span class="material-symbols-outlined">token</span>
+</div>
+<div>
+<h1 class="text-lg font-bold text-on-surface leading-tight">Echo</h1>
+<span class="text-[10px] text-purple font-bold uppercase tracking-tighter">Project ID: PRJ-992-SLICE</span>
+</div>
+</div>
+<p class="text-on-surface-variant text-xs leading-relaxed">
+                        The critical vertical slice development phase. Focuses on core gameplay loop, art direction confirmation, and performance benchmarking.
+                    </p>
+</section>
+<!-- Tags -->
+<section>
+<h4 class="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant mb-3">Tags</h4>
+<div class="flex flex-wrap gap-2">
+<span class="px-2 py-1 bg-purple/10 text-purple text-[10px] rounded-md font-medium">Critical Path</span>
+<span class="px-2 py-1 bg-mint/10 text-mint text-[10px] rounded-md font-medium">Production</span>
+<span class="px-2 py-1 bg-surface-container-highest text-secondary text-[10px] rounded-md font-medium">Sprint-04</span>
+</div>
+</section>
+<!-- Criteria List -->
+<section>
+<h4 class="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant mb-3">Completion Criteria</h4>
+<div class="space-y-3">
+<div class="flex items-start gap-3">
+<span class="material-symbols-outlined text-mint text-sm mt-0.5">check_circle</span>
+<span class="text-xs text-on-surface">Finalize character rig animations</span>
+</div>
+<div class="flex items-start gap-3">
+<span class="material-symbols-outlined text-mint text-sm mt-0.5">check_circle</span>
+<span class="text-xs text-on-surface">Integrated lighting system v1</span>
+</div>
+<div class="flex items-start gap-3 opacity-50">
+<span class="material-symbols-outlined text-on-surface-variant text-sm mt-0.5">radio_button_unchecked</span>
+<span class="text-xs text-on-surface-variant">Performance stress test (60fps)</span>
+</div>
+<div class="flex items-start gap-3 opacity-50">
+<span class="material-symbols-outlined text-on-surface-variant text-sm mt-0.5">radio_button_unchecked</span>
+<span class="text-xs text-on-surface-variant">Bug triage for internal review</span>
+</div>
+</div>
+</section>
+<!-- AI Assistant Section -->
+<section class="bg-yellow/5 rounded-xl p-4 border border-yellow/20">
+<div class="flex items-center gap-2 mb-3">
+<span class="material-symbols-outlined text-yellow text-sm" data-weight="fill">auto_awesome</span>
+<h4 class="text-[10px] uppercase tracking-widest font-bold text-yellow">Lucid AI Insight</h4>
+</div>
+<p class="text-[11px] text-on-surface-variant leading-relaxed mb-4">
+                        "Echo" is currently pacing 4 days behind. I recommend reallocating <span class="text-purple font-bold">Dev-Asset-Team</span> from the "Archive" task to mitigate delay.
+                    </p>
+<button class="w-full bg-yellow/10 hover:bg-yellow/20 text-yellow py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all">
+                        Apply Strategy
+                    </button>
+</section>
+<!-- Node Attachments -->
+<section>
+<h4 class="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant mb-3">Attachments</h4>
+<div class="grid grid-cols-2 gap-2">
+<div class="bg-surface-container rounded-lg p-2 flex items-center gap-2 cursor-pointer hover:bg-surface-variant transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant text-base">description</span>
+<span class="text-[10px] truncate text-on-surface">brief.pdf</span>
+</div>
+<div class="bg-surface-container rounded-lg p-2 flex items-center gap-2 cursor-pointer hover:bg-surface-variant transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant text-base">image</span>
+<span class="text-[10px] truncate text-on-surface">moodboard.jpg</span>
+</div>
+</div>
+</section>
+</div>
+</div>
+<div class="sticky bottom-0 p-6 bg-surface-container-low border-t border-outline-variant/10">
+<button class="w-full bg-purple text-purple-container py-3 rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg hover:brightness-110 transition-all">
+                Open Workspace
+            </button>
+</div>
+</aside>
+</div>
+</body></html>
