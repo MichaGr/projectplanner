@@ -12,7 +12,10 @@ from app import graph as graph_module
 from app import main
 from app import notion as notion_module
 from app.api import dependencies
+from app.planner_memory.provider import ProjectMemoryProvider
+from app.planner_memory.repository import MemoryRepository
 from app.repositories.settings_repository import SettingsRepository
+from app.schemas.memory import ContextItem
 from app.schemas.notion import NotionDatabaseSchemaResponse
 from app.schemas.planner import AIDocument, AIChatRequest
 from app.schemas.settings import ModelOption
@@ -87,7 +90,7 @@ def sample_project() -> dict:
     }
 
 
-def chat_payload(message: str, *, target_type: str = "node", target_id: str | None = "task-1") -> dict:
+def chat_payload(message: str, *, target_type: str = "node", target_id: str | None = "task-1", project_id: str = "project-1") -> dict:
     target_title = "Plan release" if target_id == "task-1" else "Main Graph"
     if target_type == "group":
         target_title = "Release work"
@@ -95,6 +98,7 @@ def chat_payload(message: str, *, target_type: str = "node", target_id: str | No
         target_title = "Main Graph"
 
     return {
+        "projectId": project_id,
         "message": message,
         "context": {
             "targetType": target_type,
@@ -110,14 +114,18 @@ def chat_payload(message: str, *, target_type: str = "node", target_id: str | No
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     repository = SettingsRepository(str(tmp_path / "settings.json"))
+    memory_repository = MemoryRepository(str(tmp_path / "memory.json"))
+    memory_provider = ProjectMemoryProvider(memory_repository)
     notion_service = NotionService()
     model_service = ModelService(OpenAIModelClient())
     settings_service = SettingsService(repository, model_service, notion_service)
-    engine = PlannerEngine(lambda settings: graph_module._get_model(settings))
+    engine = PlannerEngine(lambda settings: graph_module._get_model(settings), memory_provider)
     chat_service = ChatService(repository, notion_service, engine)
     document_service = DocumentService()
 
     monkeypatch.setattr(dependencies, "_settings_repository", repository, raising=False)
+    monkeypatch.setattr(dependencies, "_memory_repository", memory_repository, raising=False)
+    monkeypatch.setattr(dependencies, "_memory_provider", memory_provider, raising=False)
     monkeypatch.setattr(dependencies, "_model_service", model_service, raising=False)
     monkeypatch.setattr(dependencies, "_notion_service", notion_service, raising=False)
     monkeypatch.setattr(dependencies, "_document_service", document_service, raising=False)
@@ -346,17 +354,17 @@ def test_get_ai_graph_returns_expected_nodes_and_edges(client: TestClient) -> No
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["source"] == "langgraph"
-    assert payload["version"] == "v1"
+    assert payload["source"] == "agent-orchestrator"
+    assert payload["version"] == "v2"
     assert {node["id"] for node in payload["nodes"]} == {
         "__start__",
-        "planner",
-        "supervisor",
-        "describe_node",
-        "define_completion_criteria",
-        "create_nodes",
-        "split_into_subtasks",
-        "proposal_formatter",
+        "router",
+        "context_assembler",
+        "task_draft",
+        "memory_edit",
+        "reviewer",
+        "formatter",
+        "consolidation",
         "__end__",
     }
 
@@ -517,7 +525,9 @@ def test_graph_workers_emit_expected_proposal_shapes(message: str, context: dict
     compiled_graph = graph_module.build_graph()
     result = compiled_graph.invoke(
         {
-            "request": AIChatRequest.model_validate({"message": message, "context": context, "project": sample_project(), "conversation": []}),
+            "request": AIChatRequest.model_validate(
+                {"projectId": "project-1", "message": message, "context": context, "project": sample_project(), "conversation": []}
+            ),
             "settings": {"api_key": "sk-test", "selected_model": "gpt-4.1-mini"},
         }
     )
@@ -586,3 +596,102 @@ def test_notion_progress_sync_creates_single_entry(client: TestClient, monkeypat
     assert response.status_code == 200
     assert response.json()["syncedEntries"] == 1
     assert len(calls) == 1
+
+
+def test_ai_chat_requires_project_id(client: TestClient) -> None:
+    repository = client.repository  # type: ignore[attr-defined]
+    repository.update(api_key="sk-test")
+    payload = chat_payload("describe this task")
+    payload.pop("projectId")
+
+    response = client.post("/api/ai/chat", json=payload)
+
+    assert response.status_code == 422
+    assert "projectId" in response.text
+
+
+def test_ai_chat_can_add_memory_and_returns_memory_result(client: TestClient) -> None:
+    repository = client.repository  # type: ignore[attr-defined]
+    repository.update(api_key="sk-test")
+
+    response = client.post("/api/ai/chat", json=chat_payload("Remember this note: deployment must stay reversible"))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["proposal"] is None
+    assert payload["memoryResult"]["actionType"] == "add_update_memory"
+    assert payload["memoryResult"]["createdItems"][0]["kind"] == "note"
+    assert payload["memoryResult"]["sessionSummary"]["action_type"] == "add_update_memory"
+
+
+def test_memory_store_is_isolated_by_project(client: TestClient) -> None:
+    repository = client.repository  # type: ignore[attr-defined]
+    repository.update(api_key="sk-test")
+
+    first = client.post(
+        "/api/ai/chat",
+        json=chat_payload("Remember this note: use staged rollout", project_id="project-a"),
+    )
+    second = client.post(
+        "/api/ai/chat",
+        json=chat_payload("Remember this note: use staged rollout", project_id="project-b"),
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["memoryResult"]["reviewIssues"] == []
+    assert second.json()["memoryResult"]["reviewIssues"] == []
+
+
+def test_duplicate_memory_creates_review_issue(client: TestClient) -> None:
+    repository = client.repository  # type: ignore[attr-defined]
+    repository.update(api_key="sk-test")
+
+    first = client.post("/api/ai/chat", json=chat_payload("Remember this note: prefer short review cycles"))
+    second = client.post("/api/ai/chat", json=chat_payload("Remember this note: prefer short review cycles"))
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    issues = second.json()["memoryResult"]["reviewIssues"]
+    assert issues
+    assert issues[0]["type"] == "duplication"
+
+
+def test_orchestrator_trace_returns_control_between_agents(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    repository = client.repository  # type: ignore[attr-defined]
+    repository.update(api_key="sk-test")
+    captured_result: dict[str, object] = {}
+    original_run = client.planner_engine.run_chat  # type: ignore[attr-defined]
+
+    def wrapped_run(request, settings):
+        result = original_run(request, settings)
+        captured_result.update(result)
+        return result
+
+    monkeypatch.setattr(client.planner_engine, "run_chat", wrapped_run)  # type: ignore[attr-defined]
+
+    response = client.post("/api/ai/chat", json=chat_payload("create 2 tasks with memory context"))
+
+    assert response.status_code == 200
+    trace = captured_result["trace"]
+    assert [step["agent"] for step in trace] == ["task_draft", "task_draft", "reviewer", "formatter", "consolidation"]
+
+
+def test_memory_repository_can_update_item_status() -> None:
+    repository = MemoryRepository("/tmp/projectplanner-test-memory.json")
+    provider = ProjectMemoryProvider(repository)
+    item = ContextItem(
+        id="mem-1",
+        kind="note",
+        content="Keep release notes concise",
+        linked_node_ids=["task-1"],
+        created_at="2026-04-07T10:00:00+00:00",
+        updated_at="2026-04-07T10:00:00+00:00",
+    )
+    provider.create_items("project-1", [item])
+    updated = item.model_copy(update={"status": "stale", "updated_at": "2026-04-07T10:05:00+00:00"})
+
+    provider.update_items("project-1", [updated])
+    stored = provider.retrieve_for_action("project-1", "add_update_memory")
+
+    assert stored["context_items"][0]["status"] == "stale"

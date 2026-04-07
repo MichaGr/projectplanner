@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .memory import AIMemoryResult, ActionType
+
 
 class Position(BaseModel):
     x: float
@@ -55,7 +57,7 @@ class AIContext(BaseModel):
 
 
 class AIResolvedIntent(BaseModel):
-    intent: Literal["describe_node", "define_completion_criteria", "create_nodes", "split_into_subtasks"]
+    intent: ActionType
     confidence: Literal["low", "medium", "high"] = "medium"
     rationale: str = ""
 
@@ -166,6 +168,7 @@ class AIProposal(BaseModel):
 
 
 class AIChatRequest(BaseModel):
+    projectId: str
     message: str
     context: AIContext
     project: PlannerSnapshot
@@ -176,3 +179,4 @@ class AIChatRequest(BaseModel):
 class AIChatResponse(BaseModel):
     message: str
     proposal: AIProposal | None = None
+    memoryResult: AIMemoryResult | None = None

@@ -2,11 +2,75 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from langgraph.graph import END, START, StateGraph
+from ..planner_memory.assembler import ContextAssembler
+from ..planner_memory.orchestrator import ActionOrchestrator
+from ..planner_memory.provider import MemoryProvider
 
-from .formatters import proposal_formatter_node
-from .types import GRAPH_NODE_METADATA, OrchestrationState, ROUTE_MAP
-from .workers import PlannerWorkers
+GRAPH_NODE_METADATA = {
+    "__start__": {
+        "label": "START",
+        "kind": "entry",
+        "description": "Entry point for the orchestration flow.",
+        "inputs": [],
+        "outputs": ["request"],
+    },
+    "router": {
+        "label": "Router",
+        "kind": "router",
+        "description": "Selects the action flow for the request.",
+        "inputs": ["request"],
+        "outputs": ["action"],
+    },
+    "context_assembler": {
+        "label": "Context Assembler",
+        "kind": "planner",
+        "description": "Builds the action-specific graph and memory bundle.",
+        "inputs": ["action", "request"],
+        "outputs": ["bundle"],
+    },
+    "task_draft": {
+        "label": "Task Draft",
+        "kind": "worker",
+        "description": "Drafts graph actions and returns control to the orchestrator.",
+        "inputs": ["bundle"],
+        "outputs": ["handoff"],
+    },
+    "memory_edit": {
+        "label": "Memory Edit",
+        "kind": "worker",
+        "description": "Creates or updates memory items and returns control to the orchestrator.",
+        "inputs": ["bundle"],
+        "outputs": ["handoff"],
+    },
+    "reviewer": {
+        "label": "Reviewer",
+        "kind": "worker",
+        "description": "Checks drafts against memory and scope constraints.",
+        "inputs": ["handoff"],
+        "outputs": ["handoff"],
+    },
+    "formatter": {
+        "label": "Formatter",
+        "kind": "formatter",
+        "description": "Builds the response payload that goes back to the API.",
+        "inputs": ["handoff"],
+        "outputs": ["formatted result"],
+    },
+    "consolidation": {
+        "label": "Consolidation",
+        "kind": "worker",
+        "description": "Prepares writes, proposals, issues, and session summaries.",
+        "inputs": ["formatted result"],
+        "outputs": ["finalized result"],
+    },
+    "__end__": {
+        "label": "END",
+        "kind": "terminal",
+        "description": "Terminal node that returns the orchestrated response.",
+        "inputs": ["finalized result"],
+        "outputs": [],
+    },
+}
 
 
 def build_graph_visualization() -> dict[str, Any]:
@@ -22,69 +86,37 @@ def build_graph_visualization() -> dict[str, Any]:
         for node_id, metadata in GRAPH_NODE_METADATA.items()
     ]
     edges = [
-        {"id": "start-planner", "source": START, "target": "planner", "type": "start", "label": "boot"},
-        {"id": "planner-supervisor", "source": "planner", "target": "supervisor", "type": "linear", "label": "plan"},
-        *[
-            {
-                "id": f"supervisor-{intent}",
-                "source": "supervisor",
-                "target": target,
-                "type": "conditional",
-                "label": intent,
-            }
-            for intent, target in ROUTE_MAP.items()
-        ],
-        *[
-            {
-                "id": f"{node_id}-formatter",
-                "source": node_id,
-                "target": "proposal_formatter",
-                "type": "linear",
-                "label": "format proposal",
-            }
-            for node_id in ROUTE_MAP.values()
-        ],
-        {"id": "formatter-end", "source": "proposal_formatter", "target": END, "type": "end", "label": "return"},
+        {"id": "start-router", "source": "__start__", "target": "router", "type": "start", "label": "route"},
+        {"id": "router-context", "source": "router", "target": "context_assembler", "type": "linear", "label": "assemble"},
+        {"id": "context-task", "source": "context_assembler", "target": "task_draft", "type": "conditional", "label": "graph action"},
+        {"id": "context-memory", "source": "context_assembler", "target": "memory_edit", "type": "conditional", "label": "memory action"},
+        {"id": "draft-reviewer", "source": "task_draft", "target": "reviewer", "type": "handoff", "label": "review"},
+        {"id": "memory-reviewer", "source": "memory_edit", "target": "reviewer", "type": "handoff", "label": "review"},
+        {"id": "reviewer-formatter", "source": "reviewer", "target": "formatter", "type": "handoff", "label": "format"},
+        {"id": "formatter-consolidation", "source": "formatter", "target": "consolidation", "type": "handoff", "label": "consolidate"},
+        {"id": "consolidation-end", "source": "consolidation", "target": "__end__", "type": "end", "label": "return"},
     ]
-    legend = [
-        {"kind": "entry", "label": "Entry / Exit", "description": "Lifecycle boundary nodes for the orchestration."},
-        {"kind": "planner", "label": "Planner", "description": "Builds intent and context before routing."},
-        {"kind": "router", "label": "Router", "description": "Selects the worker branch based on resolved intent."},
-        {"kind": "worker", "label": "Worker", "description": "Produces the concrete planning mutation or text draft."},
-        {"kind": "formatter", "label": "Formatter", "description": "Packages worker output into a proposal payload."},
-        {"kind": "conditional", "label": "Conditional Edge", "description": "A branch selected by the supervisor route."},
-    ]
-    return {"version": "v1", "source": "langgraph", "nodes": nodes, "edges": edges, "legend": legend}
+    return {"version": "v2", "source": "agent-orchestrator", "nodes": nodes, "edges": edges}
+
+
+class _CompiledPlannerGraph:
+    def __init__(self, engine: "PlannerEngine") -> None:
+        self._engine = engine
+
+    def invoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        return self._engine.run_state(state["request"], state["settings"])
 
 
 class PlannerEngine:
-    def __init__(self, llm_factory: Callable[[dict[str, Any]], Any]) -> None:
-        self._llm_factory = llm_factory
-        self._compiled_graph = self._build_graph()
-
-    def _build_graph(self):
-        workers = PlannerWorkers(self._llm_factory)
-        graph = StateGraph(OrchestrationState)
-        graph.add_node("planner", workers.planner_node)
-        graph.add_node("supervisor", workers.supervisor_node)
-        graph.add_node("describe_node", workers.describe_node_node)
-        graph.add_node("define_completion_criteria", workers.completion_criteria_node)
-        graph.add_node("create_nodes", workers.create_nodes_node)
-        graph.add_node("split_into_subtasks", workers.split_into_subtasks_node)
-        graph.add_node("proposal_formatter", proposal_formatter_node)
-
-        graph.add_edge(START, "planner")
-        graph.add_edge("planner", "supervisor")
-        graph.add_conditional_edges("supervisor", lambda state: state["intent"], ROUTE_MAP)
-        graph.add_edge("describe_node", "proposal_formatter")
-        graph.add_edge("define_completion_criteria", "proposal_formatter")
-        graph.add_edge("create_nodes", "proposal_formatter")
-        graph.add_edge("split_into_subtasks", "proposal_formatter")
-        graph.add_edge("proposal_formatter", END)
-        return graph.compile()
+    def __init__(self, llm_factory: Callable[[dict[str, Any]], Any], memory_provider: MemoryProvider) -> None:
+        self._orchestrator = ActionOrchestrator(llm_factory, ContextAssembler(memory_provider), memory_provider)
+        self._compiled_graph = _CompiledPlannerGraph(self)
 
     def run_chat(self, request: Any, settings: dict[str, Any]) -> dict[str, Any]:
-        return self._compiled_graph.invoke({"request": request, "settings": settings})
+        return self._orchestrator.run(request, settings)
+
+    def run_state(self, request: Any, settings: dict[str, Any]) -> dict[str, Any]:
+        return self._orchestrator.run(request, settings)
 
     def get_visualization(self) -> dict[str, Any]:
         return build_graph_visualization()

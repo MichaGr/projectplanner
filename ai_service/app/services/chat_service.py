@@ -41,4 +41,5 @@ class ChatService:
         return AIChatResponse(
             message=result.get("response_message", "Prepared a proposal."),
             proposal=result.get("proposal"),
+            memoryResult=result.get("memory_result"),
         )

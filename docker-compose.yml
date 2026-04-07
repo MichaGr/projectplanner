@@ -14,6 +14,7 @@ services:
       dockerfile: Dockerfile
     environment:
       SETTINGS_PATH: /app/data/settings.json
+      MEMORY_PATH: /app/data/planner_memory.json
     volumes:
       - ./data/ai-service:/app/data
     ports:
@@ -25,5 +26,6 @@ services:
       dockerfile: Dockerfile
     environment:
       SETTINGS_PATH: /tmp/test-settings.json
+      MEMORY_PATH: /tmp/test-memory.json
     command: ["pytest", "-q"]
     profiles: ["test"]

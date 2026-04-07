@@ -5,6 +5,18 @@ from .notion import (
     NotionProgressEntry,
     NotionProgressSyncRequest,
 )
+from .memory import (
+    AIMemoryResult,
+    ActionMemoryBundle,
+    ActionType,
+    AgentResult,
+    ContextItem,
+    MemoryRetrievalRequest,
+    Preference,
+    PreferenceUpdateProposal,
+    ReviewIssue,
+    SessionSummary,
+)
 from .planner import (
     AIChatRequest,
     AIChatResponse,
