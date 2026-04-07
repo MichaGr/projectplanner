@@ -26,6 +26,7 @@ import {
   AIContext,
   AIConversationMessage,
   AIDocument,
+  AIMemoryResult,
   AIProposal,
   ApiError,
   AppSettings,
@@ -88,7 +89,8 @@ type TabDescriptor =
   | { id: string; kind: 'group' };
 
 type ProjectFileV1 = {
-  version: 1;
+  version: 1 | 2;
+  projectId?: string;
   project: PlannerSnapshot;
   ui: {
     openTabs: TabDescriptor[];
@@ -465,6 +467,7 @@ const blankSnapshot = (): PlannerSnapshot => ({
 });
 
 const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
+const createProjectId = () => `project-${Math.random().toString(36).slice(2, 10)}`;
 const slugify = (value: string) =>
   value
     .toLowerCase()
@@ -543,9 +546,31 @@ const getStoredSnapshot = (): PlannerSnapshot => {
   }
 
   try {
-    return sanitizeSnapshot(JSON.parse(raw) as PlannerSnapshot);
+    const parsed = JSON.parse(raw) as PlannerSnapshot | ProjectFileV1;
+    if ('project' in parsed && parsed.project) {
+      return sanitizeProjectFile(parsed).project;
+    }
+    return sanitizeSnapshot(parsed as PlannerSnapshot);
   } catch {
     return seedSnapshot();
+  }
+};
+
+const getStoredProjectId = (): string => {
+  if (typeof window === 'undefined') {
+    return createProjectId();
+  }
+
+  const raw = window.localStorage.getItem(STORAGE_KEY);
+  if (!raw) {
+    return createProjectId();
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<ProjectFileV1>;
+    return typeof parsed.projectId === 'string' && parsed.projectId ? parsed.projectId : createProjectId();
+  } catch {
+    return createProjectId();
   }
 };
 
@@ -571,7 +596,8 @@ const sanitizeProjectFile = (raw: ProjectFileV1): ProjectFileV1 => {
     raw.ui?.selectedNodeId && validNodeIds.has(raw.ui.selectedNodeId) ? raw.ui.selectedNodeId : null;
 
   return {
-    version: 1,
+    version: 2,
+    projectId: raw.projectId || createProjectId(),
     project,
     ui: {
       openTabs,
@@ -582,12 +608,14 @@ const sanitizeProjectFile = (raw: ProjectFileV1): ProjectFileV1 => {
 };
 
 const serializeProjectFile = (
+  projectId: string,
   snapshot: PlannerSnapshot,
   openTabs: TabDescriptor[],
   activeTabId: string,
   selectedNodeId: string | null,
 ): ProjectFileV1 => ({
-  version: 1,
+  version: 2,
+  projectId,
   project: snapshot,
   ui: {
     openTabs,
@@ -1363,14 +1391,14 @@ const applyAIProposalToSnapshot = (snapshot: PlannerSnapshot, proposal: AIPropos
 const buildAgentGraphFlowNodes = (graph: AIGraphResponse): AgentGraphFlowNode[] => {
   const positions: Record<string, { x: number; y: number }> = {
     __start__: { x: 70, y: 180 },
-    planner: { x: 260, y: 150 },
-    supervisor: { x: 500, y: 150 },
-    describe_node: { x: 820, y: 20 },
-    define_completion_criteria: { x: 820, y: 135 },
-    create_nodes: { x: 820, y: 250 },
-    split_into_subtasks: { x: 820, y: 365 },
-    proposal_formatter: { x: 1160, y: 150 },
-    __end__: { x: 1440, y: 180 },
+    router: { x: 250, y: 180 },
+    context_assembler: { x: 500, y: 180 },
+    task_draft: { x: 790, y: 80 },
+    memory_edit: { x: 790, y: 280 },
+    reviewer: { x: 1080, y: 180 },
+    formatter: { x: 1360, y: 180 },
+    consolidation: { x: 1620, y: 180 },
+    __end__: { x: 1880, y: 180 },
   };
 
   return graph.nodes.map((node) => ({
@@ -1630,6 +1658,7 @@ function PlannerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const aiDocumentInputRef = useRef<HTMLInputElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const [projectId, setProjectId] = useState<string>(() => getStoredProjectId());
   const [snapshot, setSnapshot] = useState<PlannerSnapshot>(() => getStoredSnapshot());
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredTheme());
   const [openTabs, setOpenTabs] = useState<TabDescriptor[]>([mainTab, aiGraphTab]);
@@ -1703,13 +1732,14 @@ function PlannerApp() {
       id: 'assistant-welcome',
       role: 'assistant',
       content:
-        'Use this assistant to draft descriptions, completion criteria, create new nodes, or split work into a node group. Proposed graph changes stay in preview until you apply them.',
+        'Use this assistant to draft graph changes or capture project memory. Graph mutations stay in preview until you apply them, while memory updates are summarized directly in the panel.',
     },
   ]);
   const [aiInput, setAiInput] = useState('');
   const [isAiBusy, setIsAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [pendingProposal, setPendingProposal] = useState<AIProposal | null>(null);
+  const [pendingMemoryResult, setPendingMemoryResult] = useState<AIMemoryResult | null>(null);
   const [isApplyingProposal, setIsApplyingProposal] = useState(false);
   const [isProposalRevisionOpen, setIsProposalRevisionOpen] = useState(false);
   const [proposalRevisionDraft, setProposalRevisionDraft] = useState('');
@@ -1753,8 +1783,11 @@ function PlannerApp() {
   const agentGraphFlowEdges = useMemo(() => (aiGraph ? buildAgentGraphFlowEdges(aiGraph) : []), [aiGraph]);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
-  }, [snapshot]);
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(serializeProjectFile(projectId, snapshot, openTabs, activeTabId, selectedNodeId)),
+    );
+  }, [projectId, snapshot, openTabs, activeTabId, selectedNodeId]);
 
   useEffect(() => {
     window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
@@ -2743,6 +2776,7 @@ function PlannerApp() {
 
   const resetDemo = useCallback(() => {
     setSnapshot(seedSnapshot());
+    setProjectId(createProjectId());
     setSessionJournal([]);
     setOpenTabs([mainTab, aiGraphTab]);
     setActiveTabId('main');
@@ -2750,6 +2784,7 @@ function PlannerApp() {
     setSelectedNodeIds([]);
     setToolbarNodeId(null);
     setPendingProposal(null);
+    setPendingMemoryResult(null);
     setAiMessages((current) => current.slice(0, 1));
     setFileFeedback('Demo project restored.');
   }, []);
@@ -2761,6 +2796,7 @@ function PlannerApp() {
     }
 
     setSnapshot(blankSnapshot());
+    setProjectId(createProjectId());
     setSessionJournal([]);
     setOpenTabs([mainTab, aiGraphTab]);
     setActiveTabId('main');
@@ -2768,6 +2804,7 @@ function PlannerApp() {
     setSelectedNodeIds([]);
     setToolbarNodeId(null);
     setPendingProposal(null);
+    setPendingMemoryResult(null);
     setFileFeedback('Started a new blank project.');
   }, []);
 
@@ -2948,7 +2985,7 @@ function PlannerApp() {
   }, [normalizedTagQuery, togglePanelTag]);
 
   const saveProject = useCallback(() => {
-    const file = serializeProjectFile(snapshot, openTabs, activeTabId, selectedNodeId);
+    const file = serializeProjectFile(projectId, snapshot, openTabs, activeTabId, selectedNodeId);
     const blob = new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -2956,10 +2993,11 @@ function PlannerApp() {
     anchor.download = fileNameFromTitle(snapshot.root.title);
     anchor.click();
     URL.revokeObjectURL(url);
-  }, [snapshot, openTabs, activeTabId, selectedNodeId]);
+  }, [projectId, snapshot, openTabs, activeTabId, selectedNodeId]);
 
   const applyLoadedProject = useCallback((projectFile: ProjectFileV1) => {
     const normalized = sanitizeProjectFile(projectFile);
+    setProjectId(normalized.projectId ?? createProjectId());
     setSnapshot(normalized.project);
     setSessionJournal([]);
     setOpenTabs(normalized.ui.openTabs);
@@ -2968,6 +3006,7 @@ function PlannerApp() {
     setSelectedNodeIds(normalized.ui.selectedNodeId ? [normalized.ui.selectedNodeId] : []);
     setToolbarNodeId(null);
     setPendingProposal(null);
+    setPendingMemoryResult(null);
     setFileFeedback('Project loaded from file.');
   }, []);
 
@@ -2981,7 +3020,7 @@ function PlannerApp() {
       try {
         const content = await file.text();
         const parsed = JSON.parse(content) as ProjectFileV1;
-        if (parsed.version !== 1 || !parsed.project || !parsed.ui) {
+        if ((parsed.version !== 1 && parsed.version !== 2) || !parsed.project || !parsed.ui) {
           throw new Error('Invalid project file format.');
         }
 
@@ -3215,6 +3254,7 @@ function PlannerApp() {
 
       try {
         const response = await sendAIChat({
+          projectId,
           message: trimmed,
           context: aiContext,
           project: snapshot,
@@ -3232,13 +3272,14 @@ function PlannerApp() {
         ]);
 
         setPendingProposal(response.proposal ?? null);
+        setPendingMemoryResult(response.memoryResult ?? null);
       } catch (error) {
         setAiError(error instanceof Error ? error.message : 'The AI assistant could not process that request.');
       } finally {
         setIsAiBusy(false);
       }
     },
-    [aiContext, aiDocuments, aiMessages, isAiBusy, snapshot],
+    [aiContext, aiDocuments, aiMessages, isAiBusy, projectId, snapshot],
   );
 
   const sendAiMessage = useCallback(async () => {
@@ -3278,6 +3319,7 @@ function PlannerApp() {
         },
       ]);
       setPendingProposal(null);
+      setPendingMemoryResult(null);
       setIsProposalRevisionOpen(false);
       setProposalRevisionDraft('');
     } catch (error) {
@@ -3289,6 +3331,7 @@ function PlannerApp() {
 
   const rejectPendingProposal = useCallback(() => {
     setPendingProposal(null);
+    setPendingMemoryResult(null);
     setIsProposalRevisionOpen(false);
     setProposalRevisionDraft('');
     setAiError(null);
@@ -4029,6 +4072,95 @@ function PlannerApp() {
                             ) : null}
                           </div>
                         ) : null}
+
+                        {!pendingProposal && pendingMemoryResult ? (
+                          <div className="proposal-card proposal-card--review">
+                            <div className="panel-header floating-panel-header">
+                              <h2>Memory Result</h2>
+                              <span>{pendingMemoryResult.actionType.replace(/_/g, ' ')}</span>
+                            </div>
+                            <div className="proposal-section">
+                              <span className="proposal-section__label">Summary</span>
+                              <p>{pendingMemoryResult.summary}</p>
+                            </div>
+                            {pendingMemoryResult.createdItems.length > 0 ? (
+                              <div className="proposal-section">
+                                <span className="proposal-section__label">Created memory</span>
+                                <div className="proposal-list">
+                                  {pendingMemoryResult.createdItems.map((item) => (
+                                    <div key={item.id} className="proposal-item">
+                                      <strong>{item.kind}</strong>: {item.content}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                            {pendingMemoryResult.updatedItems.length > 0 ? (
+                              <div className="proposal-section">
+                                <span className="proposal-section__label">Updated memory</span>
+                                <div className="proposal-list">
+                                  {pendingMemoryResult.updatedItems.map((item) => (
+                                    <div key={item.id} className="proposal-item">
+                                      <strong>{item.kind}</strong>: {item.content} · status {item.status}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                            {pendingMemoryResult.reviewIssues.length > 0 ? (
+                              <div className="proposal-section">
+                                <span className="proposal-section__label">Review issues</span>
+                                <div className="proposal-list">
+                                  {pendingMemoryResult.reviewIssues.map((issue) => (
+                                    <div key={issue.id} className="proposal-item">
+                                      <strong>{issue.type}</strong>: {issue.summary}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                            {pendingMemoryResult.preferenceProposals.length > 0 ? (
+                              <div className="proposal-section">
+                                <span className="proposal-section__label">Preference proposals</span>
+                                <div className="proposal-list">
+                                  {pendingMemoryResult.preferenceProposals.map((proposal) => (
+                                    <div key={proposal.id} className="proposal-item">
+                                      <strong>{proposal.type}</strong>: {proposal.proposed_rule}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                            {pendingMemoryResult.warnings.length > 0 ? (
+                              <div className="proposal-section">
+                                <span className="proposal-section__label">Warnings</span>
+                                <div className="proposal-list">
+                                  {pendingMemoryResult.warnings.map((warning, index) => (
+                                    <div key={`${pendingMemoryResult.actionType}-warning-${index}`} className="proposal-item">
+                                      {warning}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                            {pendingMemoryResult.sessionSummary ? (
+                              <div className="proposal-section">
+                                <span className="proposal-section__label">Session summary</span>
+                                <div className="proposal-list">
+                                  <div className="proposal-item">{pendingMemoryResult.sessionSummary.summary}</div>
+                                  <div className="proposal-item">
+                                    Touched memory items: {pendingMemoryResult.sessionSummary.touched_memory_item_ids.length}
+                                  </div>
+                                </div>
+                              </div>
+                            ) : null}
+                            <div className="proposal-actions">
+                              <button type="button" onClick={rejectPendingProposal}>
+                                Clear
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="ai-dialog-panel__composer">
@@ -4036,7 +4168,7 @@ function PlannerApp() {
                           <textarea
                             rows={4}
                             value={aiInput}
-                            placeholder="Ask the AI to draft a description, define completion criteria, create nodes, or split work into subtasks."
+                            placeholder="Ask the AI to draft graph changes or remember project context, decisions, notes, and preferences."
                             onChange={(event) => setAiInput(event.target.value)}
                           />
                           <div className="ai-composer__actions">

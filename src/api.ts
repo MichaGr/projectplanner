@@ -45,7 +45,15 @@ export type AIContext = {
 };
 
 export type AIResolvedIntent = {
-  intent: 'describe_node' | 'define_completion_criteria' | 'create_nodes' | 'split_into_subtasks';
+  intent:
+    | 'describe_node'
+    | 'define_completion_criteria'
+    | 'create_task'
+    | 'split_task'
+    | 'split_into_subtasks'
+    | 'rework_graph'
+    | 'review_memory'
+    | 'add_update_memory';
   confidence: 'low' | 'medium' | 'high';
   rationale: string;
 };
@@ -142,9 +150,75 @@ export type AIProposal = {
   operations: GraphMutationOperation[];
 };
 
+export type ContextItem = {
+  id: string;
+  kind:
+    | 'reference'
+    | 'note'
+    | 'evaluation'
+    | 'concept'
+    | 'fact'
+    | 'guideline'
+    | 'constraint'
+    | 'decision'
+    | 'question';
+  content: string;
+  scope: 'global' | 'project' | 'node';
+  linked_node_ids: string[];
+  status: 'active' | 'stale' | 'candidate_for_archive' | 'archived' | 'dismissed';
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReviewIssue = {
+  id: string;
+  type: 'conflict' | 'duplication' | 'staleness' | 'missing_dependency' | 'preference_drift' | 'prune_candidate';
+  summary: string;
+  description: string;
+  affected_item_ids: string[];
+  suggested_actions: string[];
+  status: 'open' | 'reviewed' | 'resolved' | 'dismissed';
+  created_at: string;
+  resolved_at?: string | null;
+};
+
+export type PreferenceUpdateProposal = {
+  id: string;
+  type: 'user' | 'project';
+  category: string;
+  proposed_rule: string;
+  evidence_refs: string[];
+  rationale: string;
+  status: 'pending_review' | 'accepted' | 'rejected';
+  created_at: string;
+};
+
+export type SessionSummary = {
+  id: string;
+  action_type: AIResolvedIntent['intent'];
+  summary: string;
+  touched_node_ids: string[];
+  touched_memory_item_ids: string[];
+  created_items: string[];
+  proposed_updates: string[];
+  created_at: string;
+};
+
+export type AIMemoryResult = {
+  actionType: AIResolvedIntent['intent'];
+  summary: string;
+  createdItems: ContextItem[];
+  updatedItems: ContextItem[];
+  reviewIssues: ReviewIssue[];
+  preferenceProposals: PreferenceUpdateProposal[];
+  warnings: string[];
+  sessionSummary?: SessionSummary | null;
+};
+
 export type AIChatResponse = {
   message: string;
   proposal?: AIProposal | null;
+  memoryResult?: AIMemoryResult | null;
 };
 
 export type AIGraphNode = {
@@ -160,7 +234,7 @@ export type AIGraphEdge = {
   id: string;
   source: string;
   target: string;
-  type: 'start' | 'linear' | 'conditional' | 'end';
+  type: 'start' | 'linear' | 'conditional' | 'handoff' | 'end';
   label: string;
 };
 
@@ -172,10 +246,10 @@ export type AIGraphLegendItem = {
 
 export type AIGraphResponse = {
   version: string;
-  source: 'langgraph';
+  source: 'langgraph' | 'agent-orchestrator';
   nodes: AIGraphNode[];
   edges: AIGraphEdge[];
-  legend: AIGraphLegendItem[];
+  legend?: AIGraphLegendItem[];
 };
 
 export type NotionProgressEntry = {
@@ -321,6 +395,7 @@ export const fetchNotionDatabaseSchema = async (payload: {
 };
 
 export const sendAIChat = async (payload: {
+  projectId: string;
   message: string;
   context: AIContext;
   project: unknown;
@@ -339,6 +414,7 @@ export const sendAIChat = async (payload: {
   return {
     ...result,
     proposal: normalizeProposal(result.proposal),
+    memoryResult: result.memoryResult ?? null,
   };
 };
 
