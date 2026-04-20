@@ -3,7 +3,6 @@ import {
   applyNodeChanges,
   BaseEdge,
   Connection,
-  Controls,
   Edge,
   EdgeProps,
   Handle,
@@ -20,36 +19,26 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
-  AIGraphEdge,
-  AIGraphNode,
-  AIGraphResponse,
-  AIContext,
-  AIConversationMessage,
-  AIDocument,
-  AIMemoryResult,
-  AIProposal,
   ApiError,
-  AppSettings,
-  GraphMutationOperation,
-  ModelOption,
-  fetchAIGraph,
-  fetchNotionDatabaseSchema,
-  fetchModels,
-  fetchSettings,
-  NotionDatabaseSchemaResponse,
-  NotionProgressEntry,
-  saveOpenAISettings,
-  saveNotionSettings,
-  sendAIChat,
-  syncNotionProgress,
-  uploadAIDocuments,
+  applyProjectGraphOperations,
+  checkWorkflowService,
+  createProjectGraph,
+  fetchProjectGraph,
+  listStoredProjects,
+  StoredProjectSummary,
 } from './api';
+import addIconSvg from '../material-design-icons-4.0.0/src/content/add/materialicons/24px.svg?raw';
+import searchIconSvg from '../material-design-icons-4.0.0/src/action/search/materialicons/24px.svg?raw';
+import openInNewIconSvg from '../material-design-icons-4.0.0/src/action/open_in_new/materialicons/24px.svg?raw';
+import warningIconSvg from '../material-design-icons-4.0.0/src/alert/warning/materialicons/24px.svg?raw';
+import deviceHubIconSvg from '../material-design-icons-4.0.0/src/hardware/device_hub/materialicons/24px.svg?raw';
+import checkIconSvg from '../material-design-icons-4.0.0/src/navigation/check/materialicons/24px.svg?raw';
+import closeIconSvg from '../material-design-icons-4.0.0/src/navigation/close/materialicons/24px.svg?raw';
 
 type PlannerNodeKind = 'task' | 'group';
 type TaskStatus = 'todo' | 'done';
 type ScopeId = string | null;
 type ThemeMode = 'dark' | 'light';
-type RightPanelTab = 'properties' | 'ai';
 type EditableNodeField = 'description' | 'completionCriteria';
 type EditableRootField = 'title' | 'description' | 'completionCriteria';
 
@@ -85,7 +74,6 @@ type PlannerSnapshot = {
 
 type TabDescriptor =
   | { id: 'main'; kind: 'main' }
-  | { id: 'ai-graph'; kind: 'system' }
   | { id: string; kind: 'group' };
 
 type ProjectFileV1 = {
@@ -99,6 +87,14 @@ type ProjectFileV1 = {
   };
 };
 
+type ImportableProjectFile =
+  | ProjectFileV1
+  | PlannerSnapshot
+  | {
+      projectId?: string;
+      project: PlannerSnapshot;
+    };
+
 type RenderNodeData = {
   title: string;
   kind: PlannerNodeKind;
@@ -106,6 +102,7 @@ type RenderNodeData = {
   isAvailable: boolean;
   isBlocked: boolean;
   isDropTarget: boolean;
+  isEmptyGroup?: boolean;
   completionLabel?: string;
   progressPercent?: number;
   childSummary?: string;
@@ -129,12 +126,6 @@ type DragPreviewEdge = {
   target: string;
   path: string;
 };
-type AgentGraphRenderData = {
-  label: string;
-  kind: AIGraphNode['kind'];
-  description: string;
-};
-type AgentGraphFlowNode = Node<AgentGraphRenderData, 'agentPill' | 'agentCard'>;
 type NodeJournalState = {
   id: string;
   kind: PlannerNodeKind;
@@ -144,42 +135,37 @@ type NodeJournalState = {
   status: TaskStatus;
   scopeTitle: string;
 };
-type SessionJournalEntry = NotionProgressEntry & {
+type SessionJournalEntry = JournalEntryBase & {
   entityKey?: string;
   initialNodeState?: NodeJournalState;
   finalNodeState?: NodeJournalState;
   nodeAction?: 'created' | 'updated' | 'deleted';
 };
-type NotionProgressFieldKey =
-  | 'titleField'
-  | 'projectNameField'
-  | 'syncedAtField'
-  | 'changedCountField'
-  | 'completedCountField'
-  | 'scopeField';
-type NotionNotesFieldKey = 'titleField' | 'summaryField' | 'statusField' | 'tagsField' | 'scopeField';
+type SessionJournalEntryType =
+  | 'create_node'
+  | 'update_node'
+  | 'update_root'
+  | 'status_change'
+  | 'create_edge'
+  | 'delete_node'
+  | 'delete_edge'
+  | 'apply_proposal';
 
-const notionProgressFieldLabels: Record<NotionProgressFieldKey, string> = {
-  titleField: 'Title field',
-  projectNameField: 'Project name field',
-  syncedAtField: 'Synced-at field',
-  changedCountField: 'Changed-count field',
-  completedCountField: 'Completed-count field',
-  scopeField: 'Scope field',
+type JournalEntryBase = {
+  type: SessionJournalEntryType;
+  title: string;
+  detail: string;
+  scopeTitle?: string | null;
+  completed?: boolean;
 };
-const notionNotesFieldLabels: Record<NotionNotesFieldKey, string> = {
-  titleField: 'Title field',
-  summaryField: 'Summary field',
-  statusField: 'Status field',
-  tagsField: 'Tags field',
-  scopeField: 'Scope field',
-};
+
+type BackendStatus = 'checking' | 'online' | 'offline';
 
 const STORAGE_KEY = 'project-planner-state-v2';
 const THEME_STORAGE_KEY = 'project-planner-theme-v1';
+const LEFT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-left-panel-width-v1';
 const RIGHT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-right-panel-width-v1';
 const mainTab: TabDescriptor = { id: 'main', kind: 'main' };
-const aiGraphTab: TabDescriptor = { id: 'ai-graph', kind: 'system' };
 const groupSize = { width: 360, height: 180 };
 const taskSize = { width: 260, height: 120 };
 const particleGridConfig = {
@@ -468,6 +454,7 @@ const blankSnapshot = (): PlannerSnapshot => ({
 
 const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
 const createProjectId = () => `project-${Math.random().toString(36).slice(2, 10)}`;
+const serializeSnapshot = (snapshot: PlannerSnapshot) => JSON.stringify(snapshot);
 const slugify = (value: string) =>
   value
     .toLowerCase()
@@ -576,14 +563,11 @@ const getStoredProjectId = (): string => {
 
 const sanitizeTabs = (tabs: TabDescriptor[] | undefined, nodes: PlannerNodeRecord[]) => {
   const validGroupIds = new Set(nodes.filter((node) => node.kind === 'group').map((node) => node.id));
-  const normalized = (tabs ?? []).filter(
-    (tab) => tab.kind === 'main' || tab.kind === 'system' || validGroupIds.has(tab.id),
-  );
+  const normalized = (tabs ?? []).filter((tab) => tab.kind === 'main' || validGroupIds.has(tab.id));
   const deduped = normalized.filter(
     (tab, index) => normalized.findIndex((candidate) => candidate.id === tab.id && candidate.kind === tab.kind) === index,
   );
-  const withMain = deduped.some((tab) => tab.kind === 'main') ? deduped : [mainTab, ...deduped];
-  return withMain.some((tab) => tab.kind === 'system' && tab.id === 'ai-graph') ? withMain : [...withMain, aiGraphTab];
+  return deduped.some((tab) => tab.kind === 'main') ? deduped : [mainTab, ...deduped];
 };
 
 const sanitizeProjectFile = (raw: ProjectFileV1): ProjectFileV1 => {
@@ -605,6 +589,46 @@ const sanitizeProjectFile = (raw: ProjectFileV1): ProjectFileV1 => {
       selectedNodeId,
     },
   };
+};
+
+const isPlannerSnapshot = (value: unknown): value is PlannerSnapshot => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Partial<PlannerSnapshot>;
+  return Boolean(candidate.root && Array.isArray(candidate.nodes) && Array.isArray(candidate.edges));
+};
+
+const normalizeImportedProjectFile = (raw: ImportableProjectFile): ProjectFileV1 => {
+  if (isPlannerSnapshot(raw)) {
+    return sanitizeProjectFile({
+      version: 2,
+      projectId: createProjectId(),
+      project: raw,
+      ui: {
+        openTabs: [mainTab],
+        activeTabId: 'main',
+        selectedNodeId: null,
+      },
+    });
+  }
+
+  if ('project' in raw && isPlannerSnapshot(raw.project)) {
+    const maybeProjectFile = raw as Partial<ProjectFileV1>;
+    return sanitizeProjectFile({
+      version: maybeProjectFile.version === 1 || maybeProjectFile.version === 2 ? maybeProjectFile.version : 2,
+      projectId: typeof raw.projectId === 'string' ? raw.projectId : createProjectId(),
+      project: raw.project,
+      ui: {
+        openTabs: maybeProjectFile.ui?.openTabs ?? [mainTab],
+        activeTabId: maybeProjectFile.ui?.activeTabId ?? 'main',
+        selectedNodeId: maybeProjectFile.ui?.selectedNodeId ?? null,
+      },
+    });
+  }
+
+  throw new Error('Invalid project file format.');
 };
 
 const serializeProjectFile = (
@@ -752,22 +776,6 @@ const mergeSessionJournalEntry = (current: SessionJournalEntry[], nextEntry: Ses
   merged[existingIndex] = summarizeNodeJournalEntry(mergedEntry);
   return merged;
 };
-
-const summarizeProposalOperations = (proposal: AIProposal) =>
-  proposal.operations
-    .map((operation) => {
-      if (operation.type === 'update_node_fields') {
-        return `Updated ${operation.targetType === 'root' ? proposal.context.targetTitle : operation.targetId}`;
-      }
-      if (operation.type === 'create_group') {
-        return `Created group ${operation.group.title}`;
-      }
-      if (operation.type === 'create_tasks') {
-        return `Created ${operation.tasks.length} task${operation.tasks.length === 1 ? '' : 's'}`;
-      }
-      return `Added ${operation.edges.length} dependenc${operation.edges.length === 1 ? 'y' : 'ies'}`;
-    })
-    .join('; ');
 
 type TagTreeNode = {
   id: string;
@@ -922,6 +930,18 @@ const countImmediateChildren = (nodes: PlannerNodeRecord[], nodeId: string) => g
 
 const getScopeNodes = (nodes: PlannerNodeRecord[], scopeId: ScopeId) => nodes.filter((node) => getNodeScope(node) === scopeId);
 
+const ensureUniqueNodeId = (nodes: PlannerNodeRecord[], proposedId: string, prefix: string) => {
+  if (!nodes.some((node) => node.id === proposedId)) {
+    return proposedId;
+  }
+
+  let nextId = proposedId;
+  while (nodes.some((node) => node.id === nextId)) {
+    nextId = uid(prefix);
+  }
+  return nextId;
+};
+
 const getScopeEdges = (nodes: PlannerNodeRecord[], edges: PlannerEdgeRecord[], scopeId: ScopeId) => {
   const scopedNodeIds = new Set(getScopeNodes(nodes, scopeId).map((node) => node.id));
   return edges.filter((edge) => scopedNodeIds.has(edge.source) && scopedNodeIds.has(edge.target));
@@ -1044,6 +1064,72 @@ const getEdgeIdFromDomElement = (element: Element | null): string | null => {
   return null;
 };
 
+const getNodeElementFromDragEvent = (event: MouseEvent | ReactMouseEvent, nodeId: string): HTMLElement | null => {
+  const target = event.target;
+  if (target instanceof Element) {
+    const closestNode = target.closest('.react-flow__node') as HTMLElement | null;
+    if (closestNode?.getAttribute('data-id') === nodeId) {
+      return closestNode;
+    }
+  }
+
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return document.querySelector(`.react-flow__node[data-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null;
+  }
+
+  return document.querySelector(`.react-flow__node[data-id="${nodeId}"]`) as HTMLElement | null;
+};
+
+const getRectSampleAxis = (start: number, end: number, maxStep: number) => {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return [start];
+  }
+
+  const size = end - start;
+  const segmentCount = Math.max(1, Math.ceil(size / maxStep));
+  const points: number[] = [];
+
+  for (let index = 0; index <= segmentCount; index += 1) {
+    points.push(start + (size * index) / segmentCount);
+  }
+
+  return points;
+};
+
+const findEdgeIdIntersectingRect = (rect: DOMRect): string | null => {
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const left = Math.max(0, rect.left);
+  const right = Math.min(viewportWidth, rect.right);
+  const top = Math.max(0, rect.top);
+  const bottom = Math.min(viewportHeight, rect.bottom);
+
+  if (right <= left || bottom <= top) {
+    return null;
+  }
+
+  const sampleXs = getRectSampleAxis(left, right, 18);
+  const sampleYs = getRectSampleAxis(top, bottom, 18);
+
+  for (const clientY of sampleYs) {
+    for (const clientX of sampleXs) {
+      const elements = document.elementsFromPoint(clientX, clientY);
+      for (const element of elements) {
+        if (element.closest('.react-flow__node')) {
+          continue;
+        }
+
+        const edgeId = getEdgeIdFromDomElement(element);
+        if (edgeId) {
+          return edgeId;
+        }
+      }
+    }
+  }
+
+  return null;
+};
+
 const buildFlowNodes = (
   nodes: PlannerNodeRecord[],
   scopeNodes: PlannerNodeRecord[],
@@ -1076,6 +1162,7 @@ const buildFlowNodes = (
         isAvailable,
         isBlocked: !isAvailable && !isComplete,
         isDropTarget: node.id === dropTargetNodeId,
+        isEmptyGroup: node.kind === 'group' ? childCount === 0 : undefined,
         completionLabel:
           node.kind === 'group'
             ? progress && progress.total > 0
@@ -1149,7 +1236,19 @@ const getStoredTheme = (): ThemeMode => {
   return 'dark';
 };
 
+const clampLeftPanelWidth = (value: number) => Math.min(720, Math.max(320, value));
+
 const clampRightPanelWidth = (value: number) => Math.min(720, Math.max(360, value));
+
+const getStoredLeftPanelWidth = () => {
+  if (typeof window === 'undefined') {
+    return 380;
+  }
+
+  const raw = window.localStorage.getItem(LEFT_PANEL_WIDTH_STORAGE_KEY);
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) ? clampLeftPanelWidth(parsed) : 380;
+};
 
 const getStoredRightPanelWidth = () => {
   if (typeof window === 'undefined') {
@@ -1169,295 +1268,23 @@ const nextAvailableOffset = (nodes: PlannerNodeRecord[], parentId?: string) => {
   };
 };
 
-const getAIContext = (
-  snapshot: PlannerSnapshot,
-  selectedNodeId: string | null,
-  activeScopeId: ScopeId,
-): AIContext => {
-  const selectedNode = selectedNodeId ? snapshot.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
-  if (selectedNode) {
-    return {
-      targetType: selectedNode.kind === 'group' ? 'group' : 'node',
-      targetId: selectedNode.id,
-      targetTitle: selectedNode.title,
-      scopeId: getNodeScope(selectedNode),
-    };
-  }
+const materialIconSvgs = {
+  add: addIconSvg,
+  check: checkIconSvg,
+  close: closeIconSvg,
+  device_hub: deviceHubIconSvg,
+  open_in_new: openInNewIconSvg,
+  search: searchIconSvg,
+  warning: warningIconSvg,
+} as const;
 
-  if (activeScopeId) {
-    const activeScopeNode = snapshot.nodes.find((node) => node.id === activeScopeId) ?? null;
-    if (activeScopeNode) {
-      return {
-        targetType: 'group',
-        targetId: activeScopeNode.id,
-        targetTitle: activeScopeNode.title,
-        scopeId: getNodeScope(activeScopeNode),
-      };
-    }
-  }
+type MaterialIconName = keyof typeof materialIconSvgs;
 
-  return {
-    targetType: 'root',
-    targetId: null,
-    targetTitle: snapshot.root.title,
-    scopeId: null,
-  };
-};
-
-const describeOperation = (operation: GraphMutationOperation) => {
-  if (operation.type === 'update_node_fields') {
-    const changedFields = Object.keys(operation.fields).join(', ');
-    return `Update ${operation.targetType === 'root' ? 'root graph' : operation.targetId} fields: ${changedFields}`;
-  }
-
-  if (operation.type === 'create_group') {
-    return `Create group "${operation.group.title}"`;
-  }
-
-  if (operation.type === 'create_tasks') {
-    return `Create ${operation.tasks.length} task${operation.tasks.length === 1 ? '' : 's'}`;
-  }
-
-  return `Create ${operation.edges.length} dependenc${operation.edges.length === 1 ? 'y' : 'ies'}`;
-};
-
-const formatProposalTarget = (value: string) => value.replace(/^root$/, 'Root graph');
-
-const getProposalNodeLabels = (proposal: AIProposal) => {
-  const labels = new Map<string, string>();
-
-  for (const operation of proposal.operations) {
-    if (operation.type === 'create_group') {
-      labels.set(operation.group.id, operation.group.title);
-      continue;
-    }
-
-    if (operation.type === 'create_tasks') {
-      for (const task of operation.tasks) {
-        labels.set(task.id, task.title);
-      }
-    }
-  }
-
-  return labels;
-};
-
-const getProposalDependencyLines = (proposal: AIProposal) => {
-  const labels = getProposalNodeLabels(proposal);
-  const lines: string[] = [];
-
-  for (const operation of proposal.operations) {
-    if (operation.type !== 'create_edges') {
-      continue;
-    }
-
-    for (const edge of operation.edges) {
-      const source = labels.get(edge.source) ?? edge.source;
-      const target = labels.get(edge.target) ?? edge.target;
-      lines.push(`${target} depends on ${source}.`);
-    }
-  }
-
-  return lines;
-};
-
-const ensureUniqueNodeId = (nodes: PlannerNodeRecord[], proposedId: string, prefix: string) => {
-  if (!nodes.some((node) => node.id === proposedId)) {
-    return proposedId;
-  }
-
-  let nextId = proposedId;
-  while (nodes.some((node) => node.id === nextId)) {
-    nextId = uid(prefix);
-  }
-  return nextId;
-};
-
-const ensureUniqueEdgeId = (edges: PlannerEdgeRecord[], proposedId: string) => {
-  if (!edges.some((edge) => edge.id === proposedId)) {
-    return proposedId;
-  }
-
-  let nextId = proposedId;
-  while (edges.some((edge) => edge.id === nextId)) {
-    nextId = uid('edge');
-  }
-  return nextId;
-};
-
-const applyAIProposalToSnapshot = (snapshot: PlannerSnapshot, proposal: AIProposal): PlannerSnapshot => {
-  let nextSnapshot: PlannerSnapshot = {
-    root: { ...snapshot.root, tags: [...snapshot.root.tags] },
-    nodes: snapshot.nodes.map((node) => ({ ...node, tags: [...node.tags] })),
-    edges: snapshot.edges.map((edge) => ({ ...edge })),
-  };
-
-  const idMap = new Map<string, string>();
-
-  for (const operation of proposal.operations) {
-    if (operation.type === 'update_node_fields') {
-      if (operation.targetType === 'root') {
-        nextSnapshot = {
-          ...nextSnapshot,
-          root: {
-            ...nextSnapshot.root,
-            ...operation.fields,
-          },
-        };
-      } else {
-        nextSnapshot = {
-          ...nextSnapshot,
-          nodes: nextSnapshot.nodes.map((node) =>
-            node.id === operation.targetId
-              ? {
-                  ...node,
-                  ...operation.fields,
-                }
-              : node,
-          ),
-        };
-      }
-      continue;
-    }
-
-    if (operation.type === 'create_group') {
-      const finalId = ensureUniqueNodeId(nextSnapshot.nodes, operation.group.id, 'group');
-      idMap.set(operation.group.id, finalId);
-      nextSnapshot = {
-        ...nextSnapshot,
-        nodes: [
-          ...nextSnapshot.nodes,
-          {
-            id: finalId,
-            kind: 'group',
-            title: operation.group.title,
-            status: 'todo',
-            position: operation.group.position,
-            description: operation.group.description,
-            completionCriteria: operation.group.completionCriteria,
-            tags: operation.group.tags ?? [],
-            parentId: operation.group.parentId,
-            size: operation.group.size ?? { ...groupSize },
-          },
-        ],
-      };
-      continue;
-    }
-
-    if (operation.type === 'create_tasks') {
-      const newTasks = operation.tasks.map((task) => {
-        const finalId = ensureUniqueNodeId(nextSnapshot.nodes, task.id, 'task');
-        idMap.set(task.id, finalId);
-        return {
-          id: finalId,
-          kind: 'task' as const,
-          title: task.title,
-          status: 'todo' as const,
-          position: task.position,
-          description: task.description,
-          completionCriteria: task.completionCriteria,
-          tags: task.tags ?? [],
-          parentId: task.parentId,
-        };
-      });
-
-      nextSnapshot = {
-        ...nextSnapshot,
-        nodes: [...nextSnapshot.nodes, ...newTasks],
-      };
-      continue;
-    }
-
-    if (operation.type === 'create_edges') {
-      const nextEdges = operation.edges
-        .map((edge) => ({
-          id: ensureUniqueEdgeId(nextSnapshot.edges, edge.id),
-          source: idMap.get(edge.source) ?? edge.source,
-          target: idMap.get(edge.target) ?? edge.target,
-        }))
-        .filter((edge) => !nextSnapshot.edges.some((existing) => existing.source === edge.source && existing.target === edge.target))
-        .filter((edge) => !wouldCreateCycle(nextSnapshot.edges, edge.source, edge.target));
-
-      nextSnapshot = {
-        ...nextSnapshot,
-        edges: [...nextSnapshot.edges, ...nextEdges],
-      };
-    }
-  }
-
-  return nextSnapshot;
-};
-
-const buildAgentGraphFlowNodes = (graph: AIGraphResponse): AgentGraphFlowNode[] => {
-  const positions: Record<string, { x: number; y: number }> = {
-    __start__: { x: 70, y: 180 },
-    router: { x: 250, y: 180 },
-    context_assembler: { x: 500, y: 180 },
-    task_draft: { x: 790, y: 80 },
-    memory_edit: { x: 790, y: 280 },
-    reviewer: { x: 1080, y: 180 },
-    formatter: { x: 1360, y: 180 },
-    consolidation: { x: 1620, y: 180 },
-    __end__: { x: 1880, y: 180 },
-  };
-
-  return graph.nodes.map((node) => ({
-    id: node.id,
-    type: node.kind === 'entry' || node.kind === 'terminal' ? 'agentPill' : 'agentCard',
-    position: positions[node.id] ?? { x: 0, y: 0 },
-    data: {
-      label: node.label,
-      kind: node.kind,
-      description: node.description,
-    },
-    style:
-      node.kind === 'entry' || node.kind === 'terminal'
-        ? { width: 156, height: 60 }
-        : { width: 256, height: 136 },
-    draggable: false,
-    selectable: true,
-  }));
-};
-
-const buildAgentGraphFlowEdges = (graph: AIGraphResponse): Edge[] =>
-  graph.edges.map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    label: edge.label,
-    animated: edge.type === 'conditional',
-    style:
-      edge.type === 'conditional'
-        ? { stroke: '#fd6f85', strokeWidth: 2.2 }
-        : edge.type === 'end'
-          ? { stroke: '#8bd6b4', strokeWidth: 1.8 }
-          : { stroke: '#e1c3ff', strokeWidth: 1.9 },
-    labelStyle:
-      edge.type === 'conditional'
-        ? { fill: '#ffe4e6', fontSize: 11, fontWeight: 700 }
-        : { fill: '#cfd3da', fontSize: 11, fontWeight: 600 },
-    labelBgPadding: [6, 4],
-    labelBgBorderRadius: 999,
-    labelBgStyle:
-      edge.type === 'conditional'
-        ? { fill: '#38131f', fillOpacity: 0.96, stroke: '#fd6f85' }
-        : { fill: '#171a1d', fillOpacity: 0.95, stroke: '#44484c' },
-  }));
-
-const ToolbarIcon = ({ path }: { path: string }) => (
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d={path} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
+const ToolbarIcon = ({ name }: { name: MaterialIconName }) => (
+  <span className="app-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: materialIconSvgs[name] }} />
 );
 
-const Graph3Icon = () => (
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <circle cx="7" cy="6" r="2.25" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    <circle cx="17" cy="9" r="2.25" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    <circle cx="10" cy="18" r="2.25" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    <path d="M8.9 7.2 15 8.1M15.6 10.9l-4 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
+const Graph3Icon = () => <ToolbarIcon name="device_hub" />;
 
 const NodeActions = ({ data }: { data: RenderNodeData }) => (
   <div className="node-actions nodrag nopan">
@@ -1474,7 +1301,7 @@ const NodeActions = ({ data }: { data: RenderNodeData }) => (
           aria-label={data.status === 'done' ? 'Mark as incomplete' : 'Mark as complete'}
           title={data.status === 'done' ? 'Mark as incomplete' : 'Mark as complete'}
         >
-          <ToolbarIcon path="M5 12.5 9.2 16.5 19 7.5" />
+          <ToolbarIcon name="check" />
         </button>
         <button
           type="button"
@@ -1487,7 +1314,7 @@ const NodeActions = ({ data }: { data: RenderNodeData }) => (
           aria-label="Split"
           title="Split"
         >
-          <ToolbarIcon path="M7 5a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm10 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM8.8 8.2l6.4 6.4M15.2 8.2 8.8 14.6" />
+          <ToolbarIcon name="device_hub" />
         </button>
       </>
     ) : (
@@ -1502,7 +1329,7 @@ const NodeActions = ({ data }: { data: RenderNodeData }) => (
         aria-label="Open"
         title="Open"
       >
-        <ToolbarIcon path="M4 12h10m0 0-4-4m4 4-4 4M20 5v14" />
+        <ToolbarIcon name="open_in_new" />
       </button>
     )}
     <button
@@ -1515,7 +1342,7 @@ const NodeActions = ({ data }: { data: RenderNodeData }) => (
       aria-label="Delete"
       title="Delete"
     >
-      <ToolbarIcon path="M7 7 17 17M17 7 7 17" />
+      <ToolbarIcon name="close" />
     </button>
   </div>
 );
@@ -1561,7 +1388,18 @@ const GroupNode = ({ data, selected }: NodeProps<PlannerFlowNode>) => (
     {selected && data.showActions ? <NodeActions data={data} /> : null}
     <Handle type="target" position={Position.Left} className="handle" />
     <div className="group-entry-node__header">
-      <div className="group-entry-node__eyebrow">Node Group</div>
+      <div className="group-entry-node__eyebrow">
+        <span>Node Group</span>
+        {data.isEmptyGroup ? (
+          <span
+            className="group-entry-node__warning"
+            title="Warning: Node group is empty"
+            aria-label="Warning: Node group is empty"
+          >
+            <ToolbarIcon name="warning" />
+          </span>
+        ) : null}
+      </div>
       <div className="group-entry-node__status">{data.completionLabel}</div>
     </div>
     <div className="group-entry-node__title">{data.title}</div>
@@ -1587,24 +1425,6 @@ const DragPreviewFlowEdge = ({ id, markerEnd, data }: EdgeProps<Edge<{ path?: st
   return <BaseEdge id={id} path={data.path} markerEnd={markerEnd} interactionWidth={0} />;
 };
 
-const AgentPillNode = ({ data, selected }: NodeProps<AgentGraphFlowNode>) => (
-  <div className={['agent-pill-node', `is-${data.kind}`, selected ? 'is-selected' : ''].join(' ')} data-kind={data.kind}>
-    <Handle type="target" position={Position.Left} className="handle handle--agent" />
-    <div className="agent-pill-node__label">{data.label}</div>
-    <Handle type="source" position={Position.Right} className="handle handle--agent" />
-  </div>
-);
-
-const AgentCardNode = ({ data, selected }: NodeProps<AgentGraphFlowNode>) => (
-  <div className={['agent-card-node', `is-${data.kind}`, selected ? 'is-selected' : ''].join(' ')} data-kind={data.kind}>
-    <Handle type="target" position={Position.Left} className="handle handle--agent" />
-    <div className="agent-card-node__eyebrow">{data.kind}</div>
-    <div className="agent-card-node__title">{data.label}</div>
-    <div className="agent-card-node__description">{data.description}</div>
-    <Handle type="source" position={Position.Right} className="handle handle--agent" />
-  </div>
-);
-
 const nodeTypes = {
   plannerTask: TaskNode,
   plannerGroup: GroupNode,
@@ -1612,11 +1432,6 @@ const nodeTypes = {
 
 const edgeTypes = {
   dragPreview: DragPreviewFlowEdge,
-};
-
-const agentGraphNodeTypes = {
-  agentPill: AgentPillNode,
-  agentCard: AgentCardNode,
 };
 
 const TagTree = ({
@@ -1656,12 +1471,11 @@ const TagTree = ({
 function PlannerApp() {
   const { screenToFlowPosition, setCenter, getZoom, fitView, getViewport } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const aiDocumentInputRef = useRef<HTMLInputElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const [projectId, setProjectId] = useState<string>(() => getStoredProjectId());
   const [snapshot, setSnapshot] = useState<PlannerSnapshot>(() => getStoredSnapshot());
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredTheme());
-  const [openTabs, setOpenTabs] = useState<TabDescriptor[]>([mainTab, aiGraphTab]);
+  const [openTabs, setOpenTabs] = useState<TabDescriptor[]>([mainTab]);
   const [activeTabId, setActiveTabId] = useState<string>('main');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
@@ -1671,102 +1485,38 @@ function PlannerApp() {
   const [searchQuery, setSearchQuery] = useState('');
   const [tagQuery, setTagQuery] = useState('');
   const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(false);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(() => getStoredLeftPanelWidth());
   const [shouldFocusSelectedTitle, setShouldFocusSelectedTitle] = useState(false);
   const [insertionEdgeId, setInsertionEdgeId] = useState<string | null>(null);
   const [pendingCenteredNodeId, setPendingCenteredNodeId] = useState<string | null>(null);
-  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('properties');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [appSettings, setAppSettings] = useState<AppSettings>({
-    backendStatus: 'offline',
-    openai: {
-      hasApiKey: false,
-      selectedModel: null,
-    },
-    notion: {
-      tokenConfigured: false,
-      notesDatabaseId: null,
-      progressDatabaseId: null,
-      useNotesForAiContext: false,
-      enableProgressSync: false,
-      progressFieldMap: {},
-      notesFieldMap: {},
-    },
-  });
-  const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
-  const [notionSettingsError, setNotionSettingsError] = useState<string | null>(null);
-  const [notionSettingsMessage, setNotionSettingsMessage] = useState<string | null>(null);
-  const [isSettingsLoading, setIsSettingsLoading] = useState(true);
-  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
-  const [isModelsLoading, setIsModelsLoading] = useState(false);
-  const [apiKeyDraft, setApiKeyDraft] = useState('');
-  const [selectedModelDraft, setSelectedModelDraft] = useState<string>('');
-  const [notionTokenDraft, setNotionTokenDraft] = useState('');
-  const [notionNotesDatabaseIdDraft, setNotionNotesDatabaseIdDraft] = useState('');
-  const [notionProgressDatabaseIdDraft, setNotionProgressDatabaseIdDraft] = useState('');
-  const [notionProgressFieldMapDraft, setNotionProgressFieldMapDraft] = useState<Record<NotionProgressFieldKey, string>>({
-    titleField: '',
-    projectNameField: '',
-    syncedAtField: '',
-    changedCountField: '',
-    completedCountField: '',
-    scopeField: '',
-  });
-  const [notionNotesFieldMapDraft, setNotionNotesFieldMapDraft] = useState<Record<NotionNotesFieldKey, string>>({
-    titleField: '',
-    summaryField: '',
-    statusField: '',
-    tagsField: '',
-    scopeField: '',
-  });
-  const [notionProgressSchema, setNotionProgressSchema] = useState<NotionDatabaseSchemaResponse | null>(null);
-  const [notionNotesSchema, setNotionNotesSchema] = useState<NotionDatabaseSchemaResponse | null>(null);
-  const [isNotionProgressSchemaLoading, setIsNotionProgressSchemaLoading] = useState(false);
-  const [isNotionNotesSchemaLoading, setIsNotionNotesSchemaLoading] = useState(false);
-  const [useNotionNotesForAiContextDraft, setUseNotionNotesForAiContextDraft] = useState(false);
-  const [enableNotionProgressSyncDraft, setEnableNotionProgressSyncDraft] = useState(false);
-  const [isNotionSyncing, setIsNotionSyncing] = useState(false);
+  const [isProjectLibraryOpen, setIsProjectLibraryOpen] = useState(false);
+  const [storedProjects, setStoredProjects] = useState<StoredProjectSummary[]>([]);
+  const [isStoredProjectsLoading, setIsStoredProjectsLoading] = useState(false);
+  const [storedProjectsError, setStoredProjectsError] = useState<string | null>(null);
+  const [loadingStoredProjectId, setLoadingStoredProjectId] = useState<string | null>(null);
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking');
   const [sessionJournal, setSessionJournal] = useState<SessionJournalEntry[]>([]);
-  const [aiMessages, setAiMessages] = useState<AIConversationMessage[]>([
-    {
-      id: 'assistant-welcome',
-      role: 'assistant',
-      content:
-        'Use this assistant to draft graph changes or capture project memory. Graph mutations stay in preview until you apply them, while memory updates are summarized directly in the panel.',
-    },
-  ]);
-  const [aiInput, setAiInput] = useState('');
-  const [isAiBusy, setIsAiBusy] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [pendingProposal, setPendingProposal] = useState<AIProposal | null>(null);
-  const [pendingMemoryResult, setPendingMemoryResult] = useState<AIMemoryResult | null>(null);
-  const [isApplyingProposal, setIsApplyingProposal] = useState(false);
-  const [isProposalRevisionOpen, setIsProposalRevisionOpen] = useState(false);
-  const [proposalRevisionDraft, setProposalRevisionDraft] = useState('');
   const [rightPanelWidth, setRightPanelWidth] = useState(() => getStoredRightPanelWidth());
-  const [isAiDialogMinimized, setIsAiDialogMinimized] = useState(false);
-  const [aiDocuments, setAiDocuments] = useState<AIDocument[]>([]);
-  const [isUploadingAiDocuments, setIsUploadingAiDocuments] = useState(false);
-  const [isAiDropActive, setIsAiDropActive] = useState(false);
-  const [aiGraph, setAiGraph] = useState<AIGraphResponse | null>(null);
-  const [isAIGraphLoading, setIsAIGraphLoading] = useState(false);
-  const [aiGraphError, setAIGraphError] = useState<string | null>(null);
-  const [selectedAIGraphNodeId, setSelectedAIGraphNodeId] = useState<string | null>(null);
   const [dragDropTarget, setDragDropTarget] = useState<NodeDropTarget>(null);
   const [dragPreviewNodeId, setDragPreviewNodeId] = useState<string | null>(null);
   const [flowViewport, setFlowViewport] = useState({ x: 0, y: 0, zoom: 1 });
   const [isCanvasPointerDown, setIsCanvasPointerDown] = useState(false);
+  const [isProjectGraphLoading, setIsProjectGraphLoading] = useState(true);
+  const [graphSyncError, setGraphSyncError] = useState<string | null>(null);
   const isResizingPanelRef = useRef(false);
+  const isResizingLeftPanelRef = useRef(false);
   const canvasNodesRef = useRef<PlannerFlowNode[]>([]);
-
-  const isAIGraphTabActive = activeTabId === 'ai-graph';
-  const activeScopeId: ScopeId = activeTabId === 'main' || isAIGraphTabActive ? null : activeTabId;
-  const isAiAvailable = appSettings.backendStatus === 'online' && appSettings.openai.hasApiKey;
-  const isNotionProgressSyncAvailable =
-    appSettings.backendStatus === 'online' &&
-    appSettings.notion.tokenConfigured &&
-    appSettings.notion.enableProgressSync &&
-    Boolean(appSettings.notion.progressDatabaseId);
+  const snapshotRef = useRef(snapshot);
+  const projectIdRef = useRef(projectId);
+  const isInspectorEditingRef = useRef(false);
+  const isApplyingServerSnapshotRef = useRef(false);
+  const hasHydratedProjectRef = useRef(false);
+  const syncTimerRef = useRef<number | null>(null);
+  const syncPromiseRef = useRef<Promise<void> | null>(null);
+  const syncResolveRef = useRef<(() => void) | null>(null);
+  const lastSyncedSnapshotRef = useRef(serializeSnapshot(snapshot));
+  const activeScopeId: ScopeId = activeTabId === 'main' ? null : activeTabId;
 
   const appendSessionJournal = useCallback((entry: SessionJournalEntry | SessionJournalEntry[]) => {
     const nextEntries = Array.isArray(entry) ? entry : [entry];
@@ -1779,8 +1529,6 @@ function PlannerApp() {
     [snapshot.nodes, snapshot.edges, activeScopeId],
   );
   const [canvasNodes, setCanvasNodes] = useState<PlannerFlowNode[]>([]);
-  const agentGraphFlowNodes = useMemo(() => (aiGraph ? buildAgentGraphFlowNodes(aiGraph) : []), [aiGraph]);
-  const agentGraphFlowEdges = useMemo(() => (aiGraph ? buildAgentGraphFlowEdges(aiGraph) : []), [aiGraph]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -1795,139 +1543,179 @@ function PlannerApp() {
   }, [themeMode]);
 
   useEffect(() => {
+    window.localStorage.setItem(LEFT_PANEL_WIDTH_STORAGE_KEY, String(leftPanelWidth));
+  }, [leftPanelWidth]);
+
+  useEffect(() => {
     window.localStorage.setItem(RIGHT_PANEL_WIDTH_STORAGE_KEY, String(rightPanelWidth));
   }, [rightPanelWidth]);
 
-  const loadModels = useCallback(
-    async (options?: { silentNoKey?: boolean }) => {
-      setIsModelsLoading(true);
-      setSettingsError(null);
-
-      try {
-        const models = await fetchModels();
-        setModelOptions(models);
-      } catch (error) {
-        if (
-          options?.silentNoKey &&
-          error instanceof ApiError &&
-          error.status === 400 &&
-          error.message === 'Configure an OpenAI API key first.'
-        ) {
-          setModelOptions([]);
-          return;
-        }
-
-        setSettingsError(error instanceof Error ? error.message : 'Could not load available models.');
-        setModelOptions([]);
-      } finally {
-        setIsModelsLoading(false);
-      }
-    },
-    [],
-  );
-
-  const loadSettings = useCallback(async () => {
-    setIsSettingsLoading(true);
-    setSettingsError(null);
-
-    try {
-      const settings = await fetchSettings();
-      setAppSettings(settings);
-      setSelectedModelDraft(settings.openai.selectedModel ?? '');
-      setNotionNotesDatabaseIdDraft(settings.notion.notesDatabaseId ?? '');
-      setNotionProgressDatabaseIdDraft(settings.notion.progressDatabaseId ?? '');
-      setNotionProgressFieldMapDraft({
-        titleField: settings.notion.progressFieldMap?.titleField ?? '',
-        projectNameField: settings.notion.progressFieldMap?.projectNameField ?? '',
-        syncedAtField: settings.notion.progressFieldMap?.syncedAtField ?? '',
-        changedCountField: settings.notion.progressFieldMap?.changedCountField ?? '',
-        completedCountField: settings.notion.progressFieldMap?.completedCountField ?? '',
-        scopeField: settings.notion.progressFieldMap?.scopeField ?? '',
-      });
-      setNotionNotesFieldMapDraft({
-        titleField: settings.notion.notesFieldMap?.titleField ?? '',
-        summaryField: settings.notion.notesFieldMap?.summaryField ?? '',
-        statusField: settings.notion.notesFieldMap?.statusField ?? '',
-        tagsField: settings.notion.notesFieldMap?.tagsField ?? '',
-        scopeField: settings.notion.notesFieldMap?.scopeField ?? '',
-      });
-      setUseNotionNotesForAiContextDraft(settings.notion.useNotesForAiContext);
-      setEnableNotionProgressSyncDraft(settings.notion.enableProgressSync);
-      if (settings.openai.hasApiKey) {
-        await loadModels();
-      } else {
-        setModelOptions([]);
-      }
-    } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : 'Could not reach the AI backend.');
-      setAppSettings((current) => ({
-        ...current,
-        backendStatus: 'offline',
-        openai: {
-          hasApiKey: false,
-          selectedModel: null,
-        },
-        notion: {
-          tokenConfigured: false,
-          notesDatabaseId: null,
-          progressDatabaseId: null,
-          useNotesForAiContext: false,
-          enableProgressSync: false,
-          progressFieldMap: {},
-          notesFieldMap: {},
-        },
-      }));
-      setModelOptions([]);
-    } finally {
-      setIsSettingsLoading(false);
-    }
-  }, [loadModels]);
+  useEffect(() => {
+    snapshotRef.current = snapshot;
+  }, [snapshot]);
 
   useEffect(() => {
-    void loadSettings();
-  }, [loadSettings]);
+    projectIdRef.current = projectId;
+  }, [projectId]);
 
-  const loadAIGraph = useCallback(async () => {
-    setIsAIGraphLoading(true);
-    setAIGraphError(null);
+  const applyServerProjectGraph = useCallback((nextProjectId: string, nextSnapshot: PlannerSnapshot) => {
+    const normalizedSnapshot = sanitizeSnapshot(nextSnapshot);
+    isApplyingServerSnapshotRef.current = true;
+    lastSyncedSnapshotRef.current = serializeSnapshot(normalizedSnapshot);
+    setProjectId(nextProjectId);
+    setSnapshot(normalizedSnapshot);
+    setGraphSyncError(null);
+  }, []);
+
+  const loadStoredProjects = useCallback(async () => {
+    setIsStoredProjectsLoading(true);
+    setStoredProjectsError(null);
 
     try {
-      const nextGraph = await fetchAIGraph();
-      setAiGraph(nextGraph);
-      setSelectedAIGraphNodeId((current) => current ?? nextGraph.nodes[0]?.id ?? null);
+      const projects = await listStoredProjects();
+      setStoredProjects(projects);
     } catch (error) {
-      setAIGraphError(error instanceof Error ? error.message : 'Could not load the AI graph overview.');
+      setStoredProjectsError(error instanceof Error ? error.message : 'Could not load saved projects.');
     } finally {
-      setIsAIGraphLoading(false);
+      setIsStoredProjectsLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    if (isAIGraphTabActive && !aiGraph && !isAIGraphLoading) {
-      void loadAIGraph();
-    }
-  }, [isAIGraphTabActive, aiGraph, isAIGraphLoading, loadAIGraph]);
+  const persistSnapshotToServer = useCallback(
+    async (nextSnapshot?: PlannerSnapshot) => {
+      const snapshotToPersist = sanitizeSnapshot(nextSnapshot ?? snapshotRef.current);
+      const response = await applyProjectGraphOperations(projectIdRef.current, [
+        {
+          type: 'replace_graph',
+          project: snapshotToPersist,
+        },
+      ]);
 
-  useEffect(() => {
-    if (!aiGraph) {
+      applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
+      setFileFeedback(null);
+    },
+    [applyServerProjectGraph],
+  );
+
+  const flushProjectGraphSync = useCallback(async () => {
+    const nextSerialized = serializeSnapshot(snapshotRef.current);
+    if (!hasHydratedProjectRef.current || nextSerialized === lastSyncedSnapshotRef.current) {
       return;
     }
-    if (!selectedAIGraphNodeId || !aiGraph.nodes.some((node) => node.id === selectedAIGraphNodeId)) {
-      setSelectedAIGraphNodeId(aiGraph.nodes[0]?.id ?? null);
+
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
     }
-  }, [aiGraph, selectedAIGraphNodeId]);
+
+    if (!syncPromiseRef.current) {
+      const pending = persistSnapshotToServer(snapshotRef.current)
+        .catch((error) => {
+          setGraphSyncError(error instanceof Error ? error.message : 'Could not persist the workflow.');
+        })
+        .finally(() => {
+          syncPromiseRef.current = null;
+          syncResolveRef.current?.();
+          syncResolveRef.current = null;
+        });
+      syncPromiseRef.current = pending;
+    }
+
+    if (syncPromiseRef.current) {
+      await syncPromiseRef.current;
+    }
+  }, [persistSnapshotToServer]);
+
+  const initializeProjectGraph = useCallback(async () => {
+    setIsProjectGraphLoading(true);
+    setGraphSyncError(null);
+
+    try {
+      await checkWorkflowService();
+      setBackendStatus('online');
+      const response = await fetchProjectGraph(projectIdRef.current);
+      applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        const response = await createProjectGraph({
+          projectId: projectIdRef.current,
+          project: snapshotRef.current,
+        });
+        applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
+        setBackendStatus('online');
+      } else {
+        setBackendStatus('offline');
+        setGraphSyncError(error instanceof Error ? error.message : 'Could not load the workflow from the backend.');
+      }
+    } finally {
+      hasHydratedProjectRef.current = true;
+      setIsProjectGraphLoading(false);
+    }
+  }, [applyServerProjectGraph]);
 
   useEffect(() => {
-    if (!isAIGraphTabActive || !aiGraph || agentGraphFlowNodes.length === 0) {
+    void initializeProjectGraph();
+  }, [initializeProjectGraph]);
+
+  useEffect(() => {
+    if (!hasHydratedProjectRef.current) {
+      return;
+    }
+    if (isApplyingServerSnapshotRef.current) {
+      isApplyingServerSnapshotRef.current = false;
       return;
     }
 
-    const frame = window.requestAnimationFrame(() => {
-      void fitView({ padding: 0.18, duration: 240, minZoom: 0.45, maxZoom: 1.2 });
-    });
+    const nextSerialized = serializeSnapshot(snapshot);
+    if (nextSerialized === lastSyncedSnapshotRef.current) {
+      return;
+    }
 
-    return () => window.cancelAnimationFrame(frame);
-  }, [isAIGraphTabActive, aiGraph, agentGraphFlowNodes.length, fitView]);
+    if (isInspectorEditingRef.current) {
+      return;
+    }
+
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current);
+    } else {
+      syncPromiseRef.current = new Promise<void>((resolve) => {
+        syncResolveRef.current = resolve;
+      });
+    }
+
+    syncTimerRef.current = window.setTimeout(() => {
+      syncTimerRef.current = null;
+      void persistSnapshotToServer(snapshot)
+        .catch((error) => {
+          setGraphSyncError(error instanceof Error ? error.message : 'Could not persist the workflow.');
+        })
+        .finally(() => {
+          syncPromiseRef.current = null;
+          syncResolveRef.current?.();
+          syncResolveRef.current = null;
+        });
+    }, 300);
+
+    return () => {
+      if (syncTimerRef.current !== null) {
+        window.clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+    };
+  }, [snapshot, persistSnapshotToServer]);
+
+  const handleInspectorFieldFocus = useCallback(() => {
+    isInspectorEditingRef.current = true;
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+  }, []);
+
+  const handleInspectorFieldBlur = useCallback(() => {
+    isInspectorEditingRef.current = false;
+    void flushProjectGraphSync();
+  }, [flushProjectGraphSync]);
 
   useEffect(() => {
     if (selectedNodeId && !scopeNodes.some((node) => node.id === selectedNodeId)) {
@@ -1957,10 +1745,41 @@ function PlannerApp() {
 
   useEffect(() => {
     if (isSettingsOpen) {
-      setSettingsMessage(null);
-      setNotionSettingsMessage(null);
+      setFileFeedback(null);
     }
   }, [isSettingsOpen]);
+
+  useEffect(() => {
+    if (!isProjectLibraryOpen) {
+      return;
+    }
+
+    setFileFeedback(null);
+    void loadStoredProjects();
+  }, [isProjectLibraryOpen, loadStoredProjects]);
+
+  useEffect(() => {
+    const handlePointerMove = (event: MouseEvent) => {
+      if (!isResizingLeftPanelRef.current) {
+        return;
+      }
+
+      const nextWidth = clampLeftPanelWidth(window.innerWidth - event.clientX - 24);
+      setLeftPanelWidth(nextWidth);
+    };
+
+    const handlePointerUp = () => {
+      isResizingLeftPanelRef.current = false;
+      document.body.classList.remove('is-panel-resizing');
+    };
+
+    window.addEventListener('mousemove', handlePointerMove);
+    window.addEventListener('mouseup', handlePointerUp);
+    return () => {
+      window.removeEventListener('mousemove', handlePointerMove);
+      window.removeEventListener('mouseup', handlePointerUp);
+    };
+  }, []);
 
   useEffect(() => {
     const handlePointerMove = (event: MouseEvent) => {
@@ -2272,6 +2091,15 @@ function PlannerApp() {
     }
 
     return null;
+  }, []);
+
+  const findEdgeIdIntersectingNode = useCallback((event: MouseEvent | ReactMouseEvent, nodeId: string) => {
+    const nodeElement = getNodeElementFromDragEvent(event, nodeId);
+    if (!nodeElement) {
+      return null;
+    }
+
+    return findEdgeIdIntersectingRect(nodeElement.getBoundingClientRect());
   }, []);
 
   const resolveNodeDropTarget = useCallback(
@@ -2610,18 +2438,19 @@ function PlannerApp() {
         return current;
       }
 
-      const childTitles = ['Plan subtask', 'Build subtask', 'Review subtask'];
-      const childNodes: PlannerNodeRecord[] = childTitles.map((title, index) => ({
-        id: uid('task'),
-        kind: 'task',
-        title,
-        status: 'todo',
-        position: { x: 80 + index * 110, y: 120 },
-        description: '',
-        completionCriteria: '',
-        tags: [],
-        parentId: node.id,
-      }));
+      const childNodes: PlannerNodeRecord[] = [
+        {
+          id: uid('task'),
+          kind: 'task',
+          title: node.title,
+          status: node.status,
+          position: { x: 80, y: 120 },
+          description: node.description,
+          completionCriteria: node.completionCriteria,
+          tags: [...(node.tags ?? [])],
+          parentId: node.id,
+        },
+      ];
 
       return {
         ...current,
@@ -2644,7 +2473,7 @@ function PlannerApp() {
       appendSessionJournal({
         type: 'create_node',
         title: `Split ${node.title} into a group`,
-        detail: 'Created a breakdown group with three starter subtasks.',
+        detail: `Created a breakdown group containing a child task named ${node.title}.`,
         scopeTitle: formatScopeTitle(snapshot, node.parentId),
       });
     }
@@ -2774,39 +2603,63 @@ function PlannerApp() {
     [appendSessionJournal, snapshot],
   );
 
-  const resetDemo = useCallback(() => {
-    setSnapshot(seedSnapshot());
-    setProjectId(createProjectId());
-    setSessionJournal([]);
-    setOpenTabs([mainTab, aiGraphTab]);
-    setActiveTabId('main');
-    setSelectedNodeId(null);
-    setSelectedNodeIds([]);
-    setToolbarNodeId(null);
-    setPendingProposal(null);
-    setPendingMemoryResult(null);
-    setAiMessages((current) => current.slice(0, 1));
-    setFileFeedback('Demo project restored.');
-  }, []);
-
-  const createNewProject = useCallback(() => {
+  const createNewProject = useCallback(async () => {
     const shouldReplace = window.confirm('Create a new blank project and replace the current project?');
     if (!shouldReplace) {
       return;
     }
 
-    setSnapshot(blankSnapshot());
-    setProjectId(createProjectId());
-    setSessionJournal([]);
-    setOpenTabs([mainTab, aiGraphTab]);
-    setActiveTabId('main');
-    setSelectedNodeId(null);
-    setSelectedNodeIds([]);
-    setToolbarNodeId(null);
-    setPendingProposal(null);
-    setPendingMemoryResult(null);
-    setFileFeedback('Started a new blank project.');
-  }, []);
+    try {
+      const nextProjectId = createProjectId();
+      const response = await createProjectGraph({
+        projectId: nextProjectId,
+        project: blankSnapshot(),
+      });
+      applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
+      setSessionJournal([]);
+      setOpenTabs([mainTab]);
+      setActiveTabId('main');
+      setSelectedNodeId(null);
+      setSelectedNodeIds([]);
+      setToolbarNodeId(null);
+      setSelectedEdgeId(null);
+      setFileFeedback('Started a new blank project.');
+    } catch (error) {
+      setGraphSyncError(error instanceof Error ? error.message : 'Could not create a new project.');
+    }
+  }, [applyServerProjectGraph]);
+
+  const openStoredProject = useCallback(
+    async (nextProjectId: string) => {
+      const shouldReplace = window.confirm('Load this saved project from the database and replace the current workspace?');
+      if (!shouldReplace) {
+        return;
+      }
+
+      setLoadingStoredProjectId(nextProjectId);
+      setStoredProjectsError(null);
+
+      try {
+        await flushProjectGraphSync();
+        const response = await fetchProjectGraph(nextProjectId);
+        applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
+        setSessionJournal([]);
+        setOpenTabs([mainTab]);
+        setActiveTabId('main');
+        setSelectedNodeId(null);
+        setSelectedNodeIds([]);
+        setToolbarNodeId(null);
+        setSelectedEdgeId(null);
+        setFileFeedback(`Loaded ${sanitizeSnapshot(response.project as PlannerSnapshot).root.title} from the database.`);
+        setIsProjectLibraryOpen(false);
+      } catch (error) {
+        setStoredProjectsError(error instanceof Error ? error.message : 'Could not load the selected project.');
+      } finally {
+        setLoadingStoredProjectId(null);
+      }
+    },
+    [applyServerProjectGraph, flushProjectGraphSync],
+  );
 
   const handleNodesChange = useCallback((changes: NodeChange<PlannerFlowNode>[]) => {
     setCanvasNodes((current) => {
@@ -2831,7 +2684,7 @@ function PlannerApp() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (isAIGraphTabActive || !selectedEdgeId || (event.key !== 'Backspace' && event.key !== 'Delete')) {
+      if (!selectedEdgeId || (event.key !== 'Backspace' && event.key !== 'Delete')) {
         return;
       }
 
@@ -2846,7 +2699,7 @@ function PlannerApp() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isAIGraphTabActive, selectedEdgeId, deleteSelectedEdge]);
+  }, [selectedEdgeId, deleteSelectedEdge]);
 
   useEffect(() => {
     const nextCanvasNodes = buildFlowNodes(
@@ -2921,21 +2774,9 @@ function PlannerApp() {
       if (tab.kind === 'main') {
         return snapshot.root.title;
       }
-      if (tab.kind === 'system') {
-        return 'AI Graph';
-      }
       return snapshot.nodes.find((node) => node.id === tab.id)?.title ?? 'Group';
     },
     [snapshot.nodes, snapshot.root.title],
-  );
-
-  const selectedAIGraphNode = useMemo(
-    () => aiGraph?.nodes.find((node) => node.id === selectedAIGraphNodeId) ?? null,
-    [aiGraph, selectedAIGraphNodeId],
-  );
-  const aiGraphNodeLabels = useMemo(
-    () => new Map((aiGraph?.nodes ?? []).map((node) => [node.id, node.label])),
-    [aiGraph],
   );
 
   const panelGroupProgress = panelItem?.kind === 'group' ? countGroupProgress(snapshot.nodes, panelItem.id) : null;
@@ -2995,20 +2836,28 @@ function PlannerApp() {
     URL.revokeObjectURL(url);
   }, [projectId, snapshot, openTabs, activeTabId, selectedNodeId]);
 
-  const applyLoadedProject = useCallback((projectFile: ProjectFileV1) => {
-    const normalized = sanitizeProjectFile(projectFile);
-    setProjectId(normalized.projectId ?? createProjectId());
-    setSnapshot(normalized.project);
-    setSessionJournal([]);
-    setOpenTabs(normalized.ui.openTabs);
-    setActiveTabId(normalized.ui.activeTabId);
-    setSelectedNodeId(normalized.ui.selectedNodeId);
-    setSelectedNodeIds(normalized.ui.selectedNodeId ? [normalized.ui.selectedNodeId] : []);
-    setToolbarNodeId(null);
-    setPendingProposal(null);
-    setPendingMemoryResult(null);
-    setFileFeedback('Project loaded from file.');
-  }, []);
+  const applyLoadedProject = useCallback(
+    async (projectFile: ProjectFileV1) => {
+      const normalized = sanitizeProjectFile(projectFile);
+      await flushProjectGraphSync();
+      const response = await applyProjectGraphOperations(projectId, [
+        {
+          type: 'replace_graph',
+          project: normalized.project,
+        },
+      ]);
+      applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
+      setSessionJournal([]);
+      setOpenTabs(normalized.ui.openTabs);
+      setActiveTabId(normalized.ui.activeTabId);
+      setSelectedNodeId(normalized.ui.selectedNodeId);
+      setSelectedNodeIds(normalized.ui.selectedNodeId ? [normalized.ui.selectedNodeId] : []);
+      setToolbarNodeId(null);
+      setSelectedEdgeId(null);
+      setFileFeedback('Project loaded from file.');
+    },
+    [applyServerProjectGraph, flushProjectGraphSync, projectId],
+  );
 
   const handleLoadFile = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -3019,10 +2868,8 @@ function PlannerApp() {
 
       try {
         const content = await file.text();
-        const parsed = JSON.parse(content) as ProjectFileV1;
-        if ((parsed.version !== 1 && parsed.version !== 2) || !parsed.project || !parsed.ui) {
-          throw new Error('Invalid project file format.');
-        }
+        const parsed = JSON.parse(content) as ImportableProjectFile;
+        const normalized = normalizeImportedProjectFile(parsed);
 
         const shouldReplace = window.confirm('Load this project file and replace the current project?');
         if (!shouldReplace) {
@@ -3030,360 +2877,15 @@ function PlannerApp() {
           return;
         }
 
-        applyLoadedProject(parsed);
+        await applyLoadedProject(normalized);
       } catch {
-        setFileFeedback('Could not load that file. Please choose a valid project JSON file.');
+        setFileFeedback('Could not load that file. Please choose a valid project export or planner snapshot JSON file.');
       } finally {
         event.target.value = '';
       }
     },
     [applyLoadedProject],
   );
-
-  const saveSettings = useCallback(async () => {
-    setSettingsError(null);
-    setSettingsMessage(null);
-
-    try {
-      const settings = await saveOpenAISettings({
-        apiKey: apiKeyDraft.trim() ? apiKeyDraft.trim() : undefined,
-        selectedModel: selectedModelDraft || null,
-      });
-      setAppSettings(settings);
-      setApiKeyDraft('');
-      setSettingsMessage('OpenAI settings saved on the backend.');
-      if (settings.openai.selectedModel) {
-        setSelectedModelDraft(settings.openai.selectedModel);
-      }
-      await loadModels();
-    } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : 'Could not save OpenAI settings.');
-    }
-  }, [apiKeyDraft, selectedModelDraft, loadModels]);
-
-  const saveNotionConfiguration = useCallback(async () => {
-    setNotionSettingsError(null);
-    setNotionSettingsMessage(null);
-
-    try {
-      const settings = await saveNotionSettings({
-        token: notionTokenDraft.trim() ? notionTokenDraft.trim() : undefined,
-        notesDatabaseId: notionNotesDatabaseIdDraft.trim() || null,
-        progressDatabaseId: notionProgressDatabaseIdDraft.trim() || null,
-        useNotesForAiContext: useNotionNotesForAiContextDraft,
-        enableProgressSync: enableNotionProgressSyncDraft,
-        progressFieldMap: notionProgressFieldMapDraft,
-        notesFieldMap: notionNotesFieldMapDraft,
-      });
-      setAppSettings(settings);
-      setNotionTokenDraft('');
-      setNotionNotesDatabaseIdDraft(settings.notion.notesDatabaseId ?? '');
-      setNotionProgressDatabaseIdDraft(settings.notion.progressDatabaseId ?? '');
-      setNotionProgressFieldMapDraft({
-        titleField: settings.notion.progressFieldMap?.titleField ?? '',
-        projectNameField: settings.notion.progressFieldMap?.projectNameField ?? '',
-        syncedAtField: settings.notion.progressFieldMap?.syncedAtField ?? '',
-        changedCountField: settings.notion.progressFieldMap?.changedCountField ?? '',
-        completedCountField: settings.notion.progressFieldMap?.completedCountField ?? '',
-        scopeField: settings.notion.progressFieldMap?.scopeField ?? '',
-      });
-      setNotionNotesFieldMapDraft({
-        titleField: settings.notion.notesFieldMap?.titleField ?? '',
-        summaryField: settings.notion.notesFieldMap?.summaryField ?? '',
-        statusField: settings.notion.notesFieldMap?.statusField ?? '',
-        tagsField: settings.notion.notesFieldMap?.tagsField ?? '',
-        scopeField: settings.notion.notesFieldMap?.scopeField ?? '',
-      });
-      setUseNotionNotesForAiContextDraft(settings.notion.useNotesForAiContext);
-      setEnableNotionProgressSyncDraft(settings.notion.enableProgressSync);
-      setNotionSettingsMessage('Notion settings saved on the backend.');
-    } catch (error) {
-      setNotionSettingsError(error instanceof Error ? error.message : 'Could not save Notion settings.');
-    }
-  }, [
-    notionTokenDraft,
-    notionNotesDatabaseIdDraft,
-    notionProgressDatabaseIdDraft,
-    notionProgressFieldMapDraft,
-    notionNotesFieldMapDraft,
-    useNotionNotesForAiContextDraft,
-    enableNotionProgressSyncDraft,
-  ]);
-
-  const loadNotionProgressSchema = useCallback(async () => {
-    const databaseId = notionProgressDatabaseIdDraft.trim();
-    if (!databaseId) {
-      setNotionSettingsError('Enter a progress database ID before loading the schema.');
-      return;
-    }
-
-    setIsNotionProgressSchemaLoading(true);
-    setNotionSettingsError(null);
-    setNotionSettingsMessage(null);
-
-    try {
-      const schema = await fetchNotionDatabaseSchema({
-        databaseId,
-        token: notionTokenDraft.trim() ? notionTokenDraft.trim() : undefined,
-      });
-      setNotionProgressSchema(schema);
-      if (schema.properties.length === 0) {
-        setNotionSettingsError('The selected progress database returned no mappable properties. Check the integration access and try again.');
-      }
-      setNotionSettingsMessage(`Loaded ${schema.properties.length} properties from ${schema.title || 'the selected database'}.`);
-      setNotionProgressFieldMapDraft((current) => {
-        const byType = (type: string) => schema.properties.filter((property) => property.type === type).map((property) => property.name);
-        const maybeDefault = (currentValue: string, options: string[]) =>
-          currentValue && options.includes(currentValue) ? currentValue : options.length === 1 ? options[0] : '';
-
-        return {
-          titleField: maybeDefault(current.titleField, byType('title')),
-          projectNameField: maybeDefault(current.projectNameField, byType('rich_text')),
-          syncedAtField: maybeDefault(current.syncedAtField, byType('date')),
-          changedCountField: maybeDefault(current.changedCountField, byType('number')),
-          completedCountField: maybeDefault(current.completedCountField, byType('number')),
-          scopeField: maybeDefault(current.scopeField, byType('rich_text')),
-        };
-      });
-    } catch (error) {
-      setNotionSettingsError(error instanceof Error ? error.message : 'Could not load the Notion database schema.');
-      setNotionProgressSchema(null);
-    } finally {
-      setIsNotionProgressSchemaLoading(false);
-    }
-  }, [notionProgressDatabaseIdDraft, notionTokenDraft]);
-
-  const loadNotionNotesSchema = useCallback(async () => {
-    const databaseId = notionNotesDatabaseIdDraft.trim();
-    if (!databaseId) {
-      setNotionSettingsError('Enter a notes database ID before loading the schema.');
-      return;
-    }
-
-    setIsNotionNotesSchemaLoading(true);
-    setNotionSettingsError(null);
-    setNotionSettingsMessage(null);
-
-    try {
-      const schema = await fetchNotionDatabaseSchema({
-        databaseId,
-        token: notionTokenDraft.trim() ? notionTokenDraft.trim() : undefined,
-      });
-      setNotionNotesSchema(schema);
-      if (schema.properties.length === 0) {
-        setNotionSettingsError('The selected notes database returned no mappable properties. Check the integration access and try again.');
-      }
-      setNotionSettingsMessage(`Loaded ${schema.properties.length} properties from ${schema.title || 'the selected database'}.`);
-      setNotionNotesFieldMapDraft((current) => {
-        const byTypes = (types: string[]) =>
-          schema.properties.filter((property) => types.includes(property.type)).map((property) => property.name);
-        const maybeDefault = (currentValue: string, options: string[]) =>
-          currentValue && options.includes(currentValue) ? currentValue : options.length === 1 ? options[0] : '';
-
-        return {
-          titleField: maybeDefault(current.titleField, byTypes(['title'])),
-          summaryField: maybeDefault(current.summaryField, byTypes(['rich_text'])),
-          statusField: maybeDefault(current.statusField, byTypes(['status', 'select'])),
-          tagsField: maybeDefault(current.tagsField, byTypes(['multi_select'])),
-          scopeField: maybeDefault(current.scopeField, byTypes(['rich_text', 'select', 'multi_select'])),
-        };
-      });
-    } catch (error) {
-      setNotionSettingsError(error instanceof Error ? error.message : 'Could not load the Notion notes schema.');
-      setNotionNotesSchema(null);
-    } finally {
-      setIsNotionNotesSchemaLoading(false);
-    }
-  }, [notionNotesDatabaseIdDraft, notionTokenDraft]);
-
-  const aiContext = useMemo(() => getAIContext(snapshot, selectedNodeId, activeScopeId), [snapshot, selectedNodeId, activeScopeId]);
-  const aiScopeTitle = useMemo(() => {
-    if (!aiContext.scopeId) {
-      return snapshot.root.title;
-    }
-    return snapshot.nodes.find((node) => node.id === aiContext.scopeId)?.title ?? snapshot.root.title;
-  }, [aiContext.scopeId, snapshot.nodes, snapshot.root.title]);
-  const proposalDependencyLines = useMemo(
-    () => (pendingProposal ? getProposalDependencyLines(pendingProposal) : []),
-    [pendingProposal],
-  );
-
-  const syncCurrentSessionToNotion = useCallback(async () => {
-    if (isNotionSyncing) {
-      return;
-    }
-
-    setNotionSettingsError(null);
-    setNotionSettingsMessage(null);
-    setIsNotionSyncing(true);
-
-    try {
-      const result = await syncNotionProgress({
-        project: snapshot,
-        context: aiContext,
-        entries: sessionJournal,
-      });
-      setSessionJournal([]);
-      setNotionSettingsMessage(`Synced ${result.syncedEntries} session changes to Notion.`);
-    } catch (error) {
-      setNotionSettingsError(error instanceof Error ? error.message : 'Could not sync progress to Notion.');
-    } finally {
-      setIsNotionSyncing(false);
-    }
-  }, [aiContext, isNotionSyncing, sessionJournal, snapshot]);
-
-  const sendAiPrompt = useCallback(
-    async (content: string) => {
-      const trimmed = content.trim();
-      if (!trimmed || isAiBusy) {
-        return;
-      }
-
-      const userMessage: AIConversationMessage = {
-        id: uid('msg'),
-        role: 'user',
-        content: trimmed,
-      };
-
-      const nextConversation = [...aiMessages, userMessage];
-
-      setRightPanelTab('ai');
-      setAiMessages(nextConversation);
-      setAiError(null);
-      setIsAiBusy(true);
-
-      try {
-        const response = await sendAIChat({
-          projectId,
-          message: trimmed,
-          context: aiContext,
-          project: snapshot,
-          conversation: nextConversation,
-          documents: aiDocuments,
-        });
-
-        setAiMessages((current) => [
-          ...current,
-          {
-            id: uid('msg'),
-            role: 'assistant',
-            content: response.message,
-          },
-        ]);
-
-        setPendingProposal(response.proposal ?? null);
-        setPendingMemoryResult(response.memoryResult ?? null);
-      } catch (error) {
-        setAiError(error instanceof Error ? error.message : 'The AI assistant could not process that request.');
-      } finally {
-        setIsAiBusy(false);
-      }
-    },
-    [aiContext, aiDocuments, aiMessages, isAiBusy, projectId, snapshot],
-  );
-
-  const sendAiMessage = useCallback(async () => {
-    const trimmed = aiInput.trim();
-    if (!trimmed) {
-      return;
-    }
-
-    setAiInput('');
-    await sendAiPrompt(trimmed);
-  }, [aiInput, sendAiPrompt]);
-
-  const applyPendingProposal = useCallback(async () => {
-    if (!pendingProposal || isApplyingProposal) {
-      return;
-    }
-
-    setIsApplyingProposal(true);
-    setAiError(null);
-
-    try {
-      setSnapshot((current) => applyAIProposalToSnapshot(current, pendingProposal));
-      appendSessionJournal({
-        type: 'apply_proposal',
-        title: `Applied AI proposal for ${pendingProposal.context.targetTitle}`,
-        detail: summarizeProposalOperations(pendingProposal),
-        scopeTitle: pendingProposal.context.scopeId
-          ? formatScopeTitle(snapshot, pendingProposal.context.scopeId)
-          : pendingProposal.context.targetTitle,
-      });
-      setAiMessages((current) => [
-        ...current,
-        {
-          id: uid('msg'),
-          role: 'assistant',
-          content: 'Proposal applied to the graph.',
-        },
-      ]);
-      setPendingProposal(null);
-      setPendingMemoryResult(null);
-      setIsProposalRevisionOpen(false);
-      setProposalRevisionDraft('');
-    } catch (error) {
-      setAiError(error instanceof Error ? error.message : 'Could not apply that proposal.');
-    } finally {
-      setIsApplyingProposal(false);
-    }
-  }, [appendSessionJournal, isApplyingProposal, pendingProposal, snapshot]);
-
-  const rejectPendingProposal = useCallback(() => {
-    setPendingProposal(null);
-    setPendingMemoryResult(null);
-    setIsProposalRevisionOpen(false);
-    setProposalRevisionDraft('');
-    setAiError(null);
-  }, []);
-
-  const revisePendingProposal = useCallback(async () => {
-    const trimmed = proposalRevisionDraft.trim();
-    if (!trimmed || isAiBusy) {
-      return;
-    }
-
-    await sendAiPrompt(`Revise the current proposal with this adjustment: ${trimmed}`);
-    setProposalRevisionDraft('');
-    setIsProposalRevisionOpen(false);
-  }, [proposalRevisionDraft, isAiBusy, sendAiPrompt]);
-
-  const uploadAIDocumentFiles = useCallback(async (files: File[]) => {
-    const pdfFiles = files.filter((file) => file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf');
-    if (pdfFiles.length === 0) {
-      setAiError('Only PDF files can be used as AI context.');
-      return;
-    }
-
-    setAiError(null);
-    setIsUploadingAiDocuments(true);
-
-    try {
-      const documents = await uploadAIDocuments(pdfFiles);
-      setAiDocuments((current) => [...current, ...documents]);
-    } catch (error) {
-      setAiError(error instanceof Error ? error.message : 'Could not upload those PDF files.');
-    } finally {
-      setIsUploadingAiDocuments(false);
-    }
-  }, []);
-
-  const handleAIDocumentUpload = useCallback(
-    async (event: ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(event.target.files ?? []);
-      if (files.length === 0) {
-        return;
-      }
-
-      await uploadAIDocumentFiles(files);
-      event.target.value = '';
-    },
-    [uploadAIDocumentFiles],
-  );
-
-  const removeAIDocument = useCallback((documentId: string) => {
-    setAiDocuments((current) => current.filter((document) => document.id !== documentId));
-  }, []);
 
   const breadcrumbs =
     activeTabId === 'main'
@@ -3398,8 +2900,6 @@ function PlannerApp() {
 
   const activeTabDescriptor = openTabs.find((tab) => tab.id === activeTabId) ?? mainTab;
   const activeTabLabel = tabTitle(activeTabDescriptor);
-  const canSyncSessionChanges = sessionJournal.length > 0 && isNotionProgressSyncAvailable && !isNotionSyncing;
-  const syncButtonLabel = isNotionSyncing ? 'Syncing Changes...' : `Sync Changes • ${sessionJournal.length} pending`;
 
   return (
     <>
@@ -3414,7 +2914,7 @@ function PlannerApp() {
           <div className="topbar__search-stack">
             <label className="topbar__search" aria-label="Search workspace">
               <span className="topbar__search-icon" aria-hidden="true">
-                <ToolbarIcon path="M10.5 18a7.5 7.5 0 1 1 5.3-2.2L21 21" />
+                <ToolbarIcon name="search" />
               </span>
               <input
                 value={searchQuery}
@@ -3460,40 +2960,47 @@ function PlannerApp() {
           </div>
 
           <nav className="topbar__nav" aria-label="Workspace views">
-            {[mainTab, aiGraphTab].map((tab) => (
-              <div key={tab.id} className={['topbar__tab', activeTabId === tab.id ? 'is-active' : ''].join(' ')}>
-                <button
-                  type="button"
-                  className="topbar__tab-button"
-                  onClick={() => setActiveTabId(tab.id)}
-                  aria-current={activeTabId === tab.id ? 'page' : undefined}
-                >
-                  {tab.id === 'main' ? 'Echo' : 'AI Graph'}
-                </button>
-              </div>
-            ))}
+            <div className={['topbar__tab', activeTabId === 'main' ? 'is-active' : ''].join(' ')}>
+              <button
+                type="button"
+                className="topbar__tab-button"
+                onClick={() => setActiveTabId('main')}
+                aria-current={activeTabId === 'main' ? 'page' : undefined}
+              >
+                Echo
+              </button>
+            </div>
           </nav>
 
           <div className="topbar__actions">
-            {!isAIGraphTabActive ? (
-              <button type="button" className="primary-action" onClick={() => addTask()}>
-                New Node
-              </button>
-            ) : null}
-            <button type="button" className="secondary" onClick={createNewProject}>
+            <button type="button" className="primary-action" onClick={() => addTask()} disabled={isProjectGraphLoading}>
+              New Node
+            </button>
+            <button type="button" className="secondary" onClick={() => void createNewProject()} disabled={isProjectGraphLoading}>
               New Project
             </button>
             <button
               type="button"
               className="secondary"
-              onClick={() => fileInputRef.current?.click()}
-              aria-label="Load project"
-              title="Load project"
+              onClick={() => setIsProjectLibraryOpen(true)}
+              disabled={isProjectGraphLoading}
+              aria-label="Load project from database"
+              title="Load project from database"
             >
               Load
             </button>
-            <button type="button" className="secondary" onClick={saveProject}>
-              Save
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isProjectGraphLoading}
+              aria-label="Import project file"
+              title="Import project file"
+            >
+              Import
+            </button>
+            <button type="button" className="secondary" onClick={saveProject} disabled={isProjectGraphLoading}>
+              Export
             </button>
             <button
               type="button"
@@ -3517,42 +3024,31 @@ function PlannerApp() {
           />
 
           <section className="workspace workspace--floating">
-            {fileFeedback ? <p className="feedback floating-feedback">{fileFeedback}</p> : null}
-
-            {!isAIGraphTabActive ? (
-              <aside className="floating-available-panel" aria-label="Available work">
-                <div className="panel-header floating-panel-header">
-                  <h2>Available Work</h2>
-                  <span>{availableTasks.length}</span>
-                </div>
-                <div className="floating-task-list">
-                  {availableTasks.length === 0 ? (
-                    <p className="muted">No tasks are available yet. Complete a blocker to unlock the next path.</p>
-                  ) : (
-                    availableTasks.map((task) => (
-                      <button key={task.id} className="floating-task-card" onClick={() => focusNodeInWorkspace(task)}>
-                        <span>{task.title}</span>
-                      </button>
-                    ))
-                  )}
-                </div>
-              </aside>
+            {isProjectGraphLoading || graphSyncError || fileFeedback ? (
+              <p className={['feedback floating-feedback', graphSyncError ? 'feedback--error' : ''].join(' ')}>
+                {isProjectGraphLoading ? 'Loading workflow...' : graphSyncError ?? fileFeedback}
+              </p>
             ) : null}
 
-            {!isAIGraphTabActive ? (
-              <button
-                type="button"
-                className="canvas-glass-button floating-sync-button"
-                onClick={() => void syncCurrentSessionToNotion()}
-                disabled={!canSyncSessionChanges}
-                title={syncButtonLabel}
-              >
-                <span className="floating-sync-button__label">{syncButtonLabel}</span>
-              </button>
-            ) : null}
+            <aside className="floating-available-panel" aria-label="Available work">
+              <div className="panel-header floating-panel-header">
+                <h2>Available Work</h2>
+                <span>{availableTasks.length}</span>
+              </div>
+              <div className="floating-task-list">
+                {availableTasks.length === 0 ? (
+                  <p className="muted">No tasks are available yet. Complete a blocker to unlock the next path.</p>
+                ) : (
+                  availableTasks.map((task) => (
+                    <button key={task.id} className="floating-task-card" onClick={() => focusNodeInWorkspace(task)}>
+                      <span>{task.title}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </aside>
 
-            {!isAIGraphTabActive ? (
-              <main
+            <main
                 className="canvas-shell"
                 onMouseDownCapture={(event) => {
                   const target = event.target as HTMLElement;
@@ -3588,7 +3084,7 @@ function PlannerApp() {
                         aria-label="Group selection"
                         title="Group selection"
                       >
-                        <ToolbarIcon path="M6 7a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm12 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM12 15a2 2 0 1 0 0 4 2 2 0 0 0 0-4M8 9h8M8.7 10.5l2.3 4M15.3 10.5 13 14.5" />
+                        <ToolbarIcon name="device_hub" />
                       </button>
                       <button
                         type="button"
@@ -3597,30 +3093,32 @@ function PlannerApp() {
                         aria-label="Delete selection"
                         title="Delete selection"
                       >
-                        <ToolbarIcon path="M7 7 17 17M17 7 7 17" />
+                        <ToolbarIcon name="close" />
                       </button>
                     </div>
                   ) : null}
-                  <div className="breadcrumbs canvas-shell__breadcrumbs" aria-label="Node group path">
-                    {breadcrumbs.map((crumb, index) => (
-                      <div key={crumb.id} className="breadcrumbs__item">
-                        <button
-                          className={['breadcrumbs__button', activeTabId === crumb.id ? 'is-active' : ''].join(' ')}
-                          onClick={() => setActiveTabId(crumb.id)}
-                        >
-                          {crumb.label}
-                        </button>
-                        {index < breadcrumbs.length - 1 ? <span className="breadcrumbs__separator">/</span> : null}
-                      </div>
-                    ))}
+                  <div className="canvas-shell__nav">
+                    <button
+                      type="button"
+                      className="canvas-glass-button"
+                      onClick={() => void fitView({ duration: 350, padding: 0.18 })}
+                    >
+                      Fit View
+                    </button>
+                    <div className="breadcrumbs canvas-shell__breadcrumbs" aria-label="Node group path">
+                      {breadcrumbs.map((crumb, index) => (
+                        <div key={crumb.id} className="breadcrumbs__item">
+                          <button
+                            className={['breadcrumbs__button', activeTabId === crumb.id ? 'is-active' : ''].join(' ')}
+                            onClick={() => setActiveTabId(crumb.id)}
+                          >
+                            {crumb.label}
+                          </button>
+                          {index < breadcrumbs.length - 1 ? <span className="breadcrumbs__separator">/</span> : null}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    className="canvas-glass-button"
-                    onClick={() => void fitView({ duration: 350, padding: 0.18 })}
-                  >
-                    Fit View
-                  </button>
                 </div>
                 <ReactFlow
                   nodes={canvasNodes}
@@ -3671,7 +3169,7 @@ function PlannerApp() {
                     if (nextDropTarget) {
                       setInsertionEdgeId(null);
                     } else {
-                      setInsertionEdgeId(findEdgeIdAtPoint(event.clientX, event.clientY));
+                      setInsertionEdgeId(findEdgeIdIntersectingNode(event, node.id) ?? findEdgeIdAtPoint(event.clientX, event.clientY));
                     }
                   }}
                   onNodeDragStop={(event, node) => {
@@ -3693,7 +3191,7 @@ function PlannerApp() {
                     } else if (finalDropTarget?.mode === 'combine') {
                       combineNodesIntoGroup(node.id, finalDropTarget.nodeId, finalPosition);
                     } else {
-                      const hoveredEdgeId = findEdgeIdAtPoint(event.clientX, event.clientY);
+                      const hoveredEdgeId = findEdgeIdIntersectingNode(event, node.id) ?? findEdgeIdAtPoint(event.clientX, event.clientY);
                       if (hoveredEdgeId) {
                         insertNodeIntoEdge(hoveredEdgeId, node.id);
                       } else {
@@ -3714,94 +3212,30 @@ function PlannerApp() {
                   }}
                   proOptions={{ hideAttribution: true }}
                 >
-                  <Controls />
                 </ReactFlow>
               </main>
-            ) : (
-              <main className="canvas-shell canvas-shell--ai-graph">
-                {aiGraphError ? <p className="feedback feedback--error">{aiGraphError}</p> : null}
-                <div className="ai-graph-canvas">
-                  <ParticleGridBackground />
-                  <div className="ai-graph-canvas__toolbar">
-                    <button type="button" className="secondary" onClick={() => void loadAIGraph()} disabled={isAIGraphLoading}>
-                      {isAIGraphLoading ? 'Refreshing...' : 'Refresh graph'}
-                    </button>
-                  </div>
-                  <ReactFlow
-                    nodes={agentGraphFlowNodes}
-                    edges={agentGraphFlowEdges}
-                    nodeTypes={agentGraphNodeTypes}
-                    fitView
-                    minZoom={0.45}
-                    maxZoom={1.6}
-                    panOnScroll
-                    panOnScrollMode={PanOnScrollMode.Free}
-                    panOnDrag={[1, 2]}
-                    selectionOnDrag
-                    selectionMode={SelectionMode.Full}
-                    zoomOnScroll={false}
-                    zoomOnPinch
-                    nodesDraggable={false}
-                    nodesConnectable={false}
-                    elementsSelectable
-                    zoomOnDoubleClick={false}
-                    onNodeClick={(_, node) => setSelectedAIGraphNodeId(node.id)}
-                    onPaneClick={() => setSelectedAIGraphNodeId(null)}
-                    proOptions={{ hideAttribution: true }}
-                  >
-                    <Controls />
-                  </ReactFlow>
-                </div>
-              </main>
-            )}
-            {isAIGraphTabActive ? (
-              <aside className="floating-properties-panel floating-properties-panel--graph">
-                <div className="glass-panel glass-panel--stack">
-                  {selectedAIGraphNode ? (
-                    <>
-                      <div className="glass-card">
-                        <div className="ai-graph-details-card__eyebrow">{selectedAIGraphNode.kind}</div>
-                        <h3>{selectedAIGraphNode.label}</h3>
-                        <p>{selectedAIGraphNode.description}</p>
-                      </div>
-                      <div className="glass-card">
-                        <span className="proposal-section__label">Inputs</span>
-                        <div className="proposal-list">
-                          {selectedAIGraphNode.inputs.map((input, index) => (
-                            <div key={`${selectedAIGraphNode.id}-input-${index}`} className="proposal-item">
-                              {input}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="glass-card">
-                        <span className="proposal-section__label">Outputs</span>
-                        <div className="proposal-list">
-                          {selectedAIGraphNode.outputs.map((output, index) => (
-                            <div key={`${selectedAIGraphNode.id}-output-${index}`} className="proposal-item">
-                              {output}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="glass-card">
-                      <h3>Architecture overview</h3>
-                      <p className="muted">Select a node in the graph to inspect what it does, what data it consumes, and what it emits.</p>
-                    </div>
-                  )}
-                </div>
-              </aside>
-            ) : (
-              <>
-                <aside className="floating-properties-panel">
+
+              <aside className="floating-properties-panel floating-properties-panel--resizable" style={{ width: leftPanelWidth }}>
+                  <button
+                    type="button"
+                    className="panel-resizer panel-resizer--left"
+                    onMouseDown={() => {
+                      isResizingLeftPanelRef.current = true;
+                      document.body.classList.add('is-panel-resizing');
+                    }}
+                    aria-label="Resize node information panel"
+                  />
                   <div className="glass-panel glass-panel--stack">
                     {panelMode === 'root' ? (
                       <>
                         <label className="glass-field">
                           Title
-                          <input value={snapshot.root.title} onChange={(event) => setRootField('title', event.target.value)} />
+                          <input
+                            value={snapshot.root.title}
+                            onChange={(event) => setRootField('title', event.target.value)}
+                            onFocus={handleInspectorFieldFocus}
+                            onBlur={handleInspectorFieldBlur}
+                          />
                         </label>
                         <label className="glass-field">
                           Description
@@ -3809,14 +3243,8 @@ function PlannerApp() {
                             rows={5}
                             value={snapshot.root.description}
                             onChange={(event) => setRootField('description', event.target.value)}
-                          />
-                        </label>
-                        <label className="glass-field">
-                          Completion Criteria
-                          <textarea
-                            rows={5}
-                            value={snapshot.root.completionCriteria}
-                            onChange={(event) => setRootField('completionCriteria', event.target.value)}
+                            onFocus={handleInspectorFieldFocus}
+                            onBlur={handleInspectorFieldBlur}
                           />
                         </label>
                       </>
@@ -3824,7 +3252,13 @@ function PlannerApp() {
                       <>
                         <label className="glass-field">
                           Title
-                          <input ref={titleInputRef} value={panelItem.title} onChange={(event) => setNodeTitle(panelItem.id, event.target.value)} />
+                          <input
+                            ref={titleInputRef}
+                            value={panelItem.title}
+                            onChange={(event) => setNodeTitle(panelItem.id, event.target.value)}
+                            onFocus={handleInspectorFieldFocus}
+                            onBlur={handleInspectorFieldBlur}
+                          />
                         </label>
                         <label className="glass-field">
                           Description
@@ -3832,377 +3266,91 @@ function PlannerApp() {
                             rows={5}
                             value={panelItem.description}
                             onChange={(event) => setNodeField(panelItem.id, 'description', event.target.value)}
-                          />
-                        </label>
-                        <label className="glass-field">
-                          Completion Criteria
-                          <textarea
-                            rows={5}
-                            value={panelItem.completionCriteria}
-                            onChange={(event) => setNodeField(panelItem.id, 'completionCriteria', event.target.value)}
+                            onFocus={handleInspectorFieldFocus}
+                            onBlur={handleInspectorFieldBlur}
                           />
                         </label>
                       </>
                     ) : (
                       <div className="glass-card">
-                        <p className="muted">Select an item in the active tab to edit its title, description, and completion criteria.</p>
+                        <p className="muted">Select an item in the active tab to edit its title and description.</p>
                       </div>
                     )}
                   </div>
                 </aside>
-
-                <aside
-                  className={[
-                    'floating-ai-dialog',
-                    isAiDropActive ? 'is-drop-active' : '',
-                    isAiDialogMinimized ? 'is-minimized' : '',
-                  ].join(' ')}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    if (!isAiDropActive) {
-                      setIsAiDropActive(true);
-                    }
-                  }}
-                  onDragEnter={(event) => {
-                    event.preventDefault();
-                    setIsAiDropActive(true);
-                  }}
-                  onDragLeave={(event) => {
-                    if (event.currentTarget === event.target) {
-                      setIsAiDropActive(false);
-                    }
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    setIsAiDropActive(false);
-                    void uploadAIDocumentFiles(Array.from(event.dataTransfer.files ?? []));
-                  }}
-                >
-                  {isAiDialogMinimized ? (
-                    <button
-                      type="button"
-                      className="canvas-glass-button floating-ai-dialog__collapsed-button"
-                      onClick={() => setIsAiDialogMinimized(false)}
-                      aria-label="Expand AI assistant"
-                      title="Expand AI assistant"
-                    >
-                      <span className="floating-ai-dialog__collapsed-title">AI Assistant</span>
-                      <span className="floating-ai-dialog__collapsed-meta">{aiContext.targetType}</span>
-                    </button>
-                  ) : (
-                    <div className="glass-panel glass-panel--stack ai-dialog-panel">
-                      <div className="panel-header floating-panel-header">
-                        <h2>AI Assistant</h2>
-                        <div className="floating-ai-dialog__header-actions">
-                          <span>{aiContext.targetType}</span>
-                          <button
-                            type="button"
-                            className="canvas-glass-button ai-dialog-button ai-dialog-button--icon"
-                            onClick={() => setIsAiDialogMinimized(true)}
-                            aria-label="Minimize AI assistant"
-                            title="Minimize"
-                          >
-                            <ToolbarIcon path="M6 12h12" />
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="ai-dialog-panel__context">
-                        <div className="glass-card">
-                          <strong>{aiContext.targetTitle}</strong>
-                          <p className="muted">
-                            Context: {aiContext.targetType}
-                            {aiContext.targetId ? ` · ${aiContext.targetId}` : ''}
-                          </p>
-                          {aiContext.scopeId ? <p className="muted">Within group: {aiScopeTitle}</p> : null}
-                        </div>
-
-                        <div className="glass-card">
-                          <div className="panel-header floating-panel-header">
-                            <h2>PDF Context</h2>
-                          </div>
-                          <input
-                            ref={aiDocumentInputRef}
-                            className="sr-only"
-                            type="file"
-                            accept="application/pdf,.pdf"
-                            multiple
-                            onChange={handleAIDocumentUpload}
-                          />
-                          {aiDocuments.length > 0 ? (
-                            <div className="ai-document-list">
-                              {aiDocuments.map((document) => (
-                                <div key={document.id} className="ai-document-item">
-                                  <div>
-                                    <strong>{document.name}</strong>
-                                    <p className="muted">
-                                      {document.pageCount} page{document.pageCount === 1 ? '' : 's'} · {document.excerpt}
-                                    </p>
-                                  </div>
-                                  <button type="button" className="ghost" onClick={() => removeAIDocument(document.id)}>
-                                    Remove
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="muted">Upload one or more PDFs to give the assistant extra context.</p>
-                          )}
-                          {!isAiAvailable ? (
-                            <p className="muted">
-                              {appSettings.backendStatus === 'offline'
-                                ? 'AI backend unavailable. Manual graph editing still works normally.'
-                                : 'Configure an OpenAI API key in Settings to enable AI assistance.'}
-                            </p>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div className="ai-dialog-panel__scroll">
-                        <div className="ai-message-list">
-                          {aiMessages.map((message) => (
-                            <div key={message.id} className={['ai-message', `is-${message.role}`].join(' ')}>
-                              <span className="ai-message__role">{message.role}</span>
-                              <p>{message.content}</p>
-                            </div>
-                          ))}
-                          {isAiBusy ? <p className="muted">AI assistant is preparing a response...</p> : null}
-                        </div>
-
-                        {pendingProposal ? (
-                          <div className="proposal-card proposal-card--review">
-                            <div className="panel-header floating-panel-header">
-                              <h2>Review Proposal</h2>
-                              <span>{pendingProposal.operations.length} ops</span>
-                            </div>
-                            <div className="proposal-section">
-                              <span className="proposal-section__label">Intent</span>
-                              <p>{pendingProposal.intentSummary}</p>
-                            </div>
-                            <div className="proposal-section">
-                              <span className="proposal-section__label">Context</span>
-                              <p>{pendingProposal.contextSummary}</p>
-                            </div>
-                            <div className="proposal-section">
-                              <span className="proposal-section__label">Plan</span>
-                              <div className="proposal-list">
-                                {pendingProposal.changePlan.map((step, index) => (
-                                  <div key={`${pendingProposal.proposalId}-plan-${index}`} className="proposal-item">
-                                    {step}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                            {proposalDependencyLines.length > 0 ? (
-                              <div className="proposal-section">
-                                <span className="proposal-section__label">Dependencies</span>
-                                <div className="proposal-list">
-                                  {proposalDependencyLines.map((line, index) => (
-                                    <div key={`${pendingProposal.proposalId}-dependency-${index}`} className="proposal-item">
-                                      {line}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                            <div className="proposal-section">
-                              <span className="proposal-section__label">Affected targets</span>
-                              <div className="proposal-targets">
-                                {pendingProposal.affectedTargets.map((target) => (
-                                  <span key={`${pendingProposal.proposalId}-${target}`} className="proposal-target-chip">
-                                    {formatProposalTarget(target)}
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                            {pendingProposal.openQuestions.length > 0 ? (
-                              <div className="proposal-section">
-                                <span className="proposal-section__label">Open questions</span>
-                                <div className="proposal-list">
-                                  {pendingProposal.openQuestions.map((question, index) => (
-                                    <div key={`${pendingProposal.proposalId}-question-${index}`} className="proposal-item">
-                                      {question}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                            <div className="proposal-section">
-                              <span className="proposal-section__label">Mutation preview</span>
-                              <div className="proposal-list">
-                                {pendingProposal.operations.map((operation, index) => (
-                                  <div key={`${pendingProposal.proposalId}-${index}`} className="proposal-item">
-                                    {describeOperation(operation)}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                            <div className="proposal-actions">
-                              <button type="button" onClick={() => void applyPendingProposal()} disabled={isApplyingProposal}>
-                                {isApplyingProposal ? 'Applying...' : 'Yes'}
-                              </button>
-                              <button type="button" className="secondary" onClick={rejectPendingProposal} disabled={isApplyingProposal}>
-                                No
-                              </button>
-                              <button
-                                type="button"
-                                className="secondary"
-                                onClick={() => setIsProposalRevisionOpen((current) => !current)}
-                                disabled={isApplyingProposal}
-                              >
-                                Yes, but change this
-                              </button>
-                            </div>
-                            {isProposalRevisionOpen ? (
-                              <div className="proposal-refinement">
-                                <textarea
-                                  rows={3}
-                                  value={proposalRevisionDraft}
-                                  placeholder="Describe the adjustment you want in the proposal."
-                                  onChange={(event) => setProposalRevisionDraft(event.target.value)}
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => void revisePendingProposal()}
-                                  disabled={!proposalRevisionDraft.trim() || isAiBusy}
-                                >
-                                  {isAiBusy ? 'Revising...' : 'Send adjustment'}
-                                </button>
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-
-                        {!pendingProposal && pendingMemoryResult ? (
-                          <div className="proposal-card proposal-card--review">
-                            <div className="panel-header floating-panel-header">
-                              <h2>Memory Result</h2>
-                              <span>{pendingMemoryResult.actionType.replace(/_/g, ' ')}</span>
-                            </div>
-                            <div className="proposal-section">
-                              <span className="proposal-section__label">Summary</span>
-                              <p>{pendingMemoryResult.summary}</p>
-                            </div>
-                            {pendingMemoryResult.createdItems.length > 0 ? (
-                              <div className="proposal-section">
-                                <span className="proposal-section__label">Created memory</span>
-                                <div className="proposal-list">
-                                  {pendingMemoryResult.createdItems.map((item) => (
-                                    <div key={item.id} className="proposal-item">
-                                      <strong>{item.kind}</strong>: {item.content}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                            {pendingMemoryResult.updatedItems.length > 0 ? (
-                              <div className="proposal-section">
-                                <span className="proposal-section__label">Updated memory</span>
-                                <div className="proposal-list">
-                                  {pendingMemoryResult.updatedItems.map((item) => (
-                                    <div key={item.id} className="proposal-item">
-                                      <strong>{item.kind}</strong>: {item.content} · status {item.status}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                            {pendingMemoryResult.reviewIssues.length > 0 ? (
-                              <div className="proposal-section">
-                                <span className="proposal-section__label">Review issues</span>
-                                <div className="proposal-list">
-                                  {pendingMemoryResult.reviewIssues.map((issue) => (
-                                    <div key={issue.id} className="proposal-item">
-                                      <strong>{issue.type}</strong>: {issue.summary}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                            {pendingMemoryResult.preferenceProposals.length > 0 ? (
-                              <div className="proposal-section">
-                                <span className="proposal-section__label">Preference proposals</span>
-                                <div className="proposal-list">
-                                  {pendingMemoryResult.preferenceProposals.map((proposal) => (
-                                    <div key={proposal.id} className="proposal-item">
-                                      <strong>{proposal.type}</strong>: {proposal.proposed_rule}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                            {pendingMemoryResult.warnings.length > 0 ? (
-                              <div className="proposal-section">
-                                <span className="proposal-section__label">Warnings</span>
-                                <div className="proposal-list">
-                                  {pendingMemoryResult.warnings.map((warning, index) => (
-                                    <div key={`${pendingMemoryResult.actionType}-warning-${index}`} className="proposal-item">
-                                      {warning}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                            {pendingMemoryResult.sessionSummary ? (
-                              <div className="proposal-section">
-                                <span className="proposal-section__label">Session summary</span>
-                                <div className="proposal-list">
-                                  <div className="proposal-item">{pendingMemoryResult.sessionSummary.summary}</div>
-                                  <div className="proposal-item">
-                                    Touched memory items: {pendingMemoryResult.sessionSummary.touched_memory_item_ids.length}
-                                  </div>
-                                </div>
-                              </div>
-                            ) : null}
-                            <div className="proposal-actions">
-                              <button type="button" onClick={rejectPendingProposal}>
-                                Clear
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div className="ai-dialog-panel__composer">
-                        <div className="ai-composer">
-                          <textarea
-                            rows={4}
-                            value={aiInput}
-                            placeholder="Ask the AI to draft graph changes or remember project context, decisions, notes, and preferences."
-                            onChange={(event) => setAiInput(event.target.value)}
-                          />
-                          <div className="ai-composer__actions">
-                            <button
-                              type="button"
-                              className="canvas-glass-button ai-dialog-button ai-dialog-button--icon"
-                              onClick={() => aiDocumentInputRef.current?.click()}
-                              disabled={isUploadingAiDocuments}
-                              aria-label="Add PDF context"
-                              title={isUploadingAiDocuments ? 'Uploading PDF...' : 'Add PDF context'}
-                            >
-                              <ToolbarIcon path="M12 5v14M5 12h14" />
-                            </button>
-                            <button
-                              type="button"
-                              className="canvas-glass-button ai-dialog-button"
-                              onClick={() => void sendAiMessage()}
-                              disabled={isAiBusy || !aiInput.trim() || !isAiAvailable}
-                            >
-                              Send
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-
-                      {aiError ? <p className="feedback feedback--error">{aiError}</p> : null}
-                    </div>
-                  )}
-                </aside>
-              </>
-            )}
           </section>
         </div>
       </div>
+
+      {isProjectLibraryOpen ? (
+        <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="Load project">
+          <button
+            type="button"
+            className="settings-overlay__scrim"
+            onClick={() => setIsProjectLibraryOpen(false)}
+            aria-label="Close project library"
+          />
+          <div className="settings-overlay__panel project-library-overlay__panel">
+            <div className="project-library-overlay">
+              <div className="panel-header">
+                <h2>Load Project</h2>
+                <button
+                  type="button"
+                  className="icon-button secondary"
+                  onClick={() => setIsProjectLibraryOpen(false)}
+                  aria-label="Close project library"
+                >
+                  <ToolbarIcon name="close" />
+                </button>
+              </div>
+
+              <p className="muted">
+                Choose a workflow stored in PostgreSQL. Use <strong>Import</strong> if you want to replace the current workflow from a JSON file instead.
+              </p>
+
+              {storedProjectsError ? <p className="feedback feedback--error">{storedProjectsError}</p> : null}
+
+              {isStoredProjectsLoading ? (
+                <p className="feedback">Loading saved projects...</p>
+              ) : storedProjects.length > 0 ? (
+                <div className="project-library-list">
+                  {storedProjects.map((storedProject) => (
+                    <button
+                      key={storedProject.projectId}
+                      type="button"
+                      className={['project-library-card', storedProject.projectId === projectId ? 'is-current' : ''].join(' ')}
+                      onClick={() => void openStoredProject(storedProject.projectId)}
+                      disabled={loadingStoredProjectId !== null}
+                    >
+                      <div className="project-library-card__header">
+                        <div>
+                          <h3>{storedProject.title || 'Untitled project'}</h3>
+                          <p className="muted">{storedProject.projectId}</p>
+                        </div>
+                        <span className="status-pill">{storedProject.projectId === projectId ? 'Current' : 'Stored'}</span>
+                      </div>
+                      <p className="muted">{storedProject.description.trim() || 'No description saved for this project yet.'}</p>
+                      <div className="project-library-card__meta">
+                        <span>{storedProject.nodeCount} nodes</span>
+                        <span>{storedProject.edgeCount} edges</span>
+                        <span>v{storedProject.graphVersion}</span>
+                      </div>
+                      <div className="project-library-card__footer">
+                        <span>{loadingStoredProjectId === storedProject.projectId ? 'Loading...' : 'Load project'}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="glass-card">
+                  <h3>No stored projects yet</h3>
+                  <p className="muted">Create a project or import one from file, and it will appear here once it has been persisted.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {isSettingsOpen ? (
         <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="Settings">
@@ -4212,7 +3360,7 @@ function PlannerApp() {
               <div className="panel-header">
                 <h2>Settings</h2>
                 <button type="button" className="icon-button secondary" onClick={() => setIsSettingsOpen(false)} aria-label="Close settings">
-                  <ToolbarIcon path="M7 7 17 17M17 7 7 17" />
+                  <ToolbarIcon name="close" />
                 </button>
               </div>
 
@@ -4228,240 +3376,14 @@ function PlannerApp() {
 
               <div className="settings-section">
                 <div className="panel-header">
-                  <h2>OpenAI</h2>
-                  <span className={['status-pill', appSettings.backendStatus === 'online' ? 'is-online' : 'is-offline'].join(' ')}>
-                    {isSettingsLoading ? 'Checking' : appSettings.backendStatus}
+                  <h2>Persistence</h2>
+                  <span className={['status-pill', backendStatus === 'online' ? 'is-online' : backendStatus === 'offline' ? 'is-offline' : ''].join(' ')}>
+                    {backendStatus}
                   </span>
                 </div>
-                <p className="muted">
-                  API key status: {appSettings.openai.hasApiKey ? 'configured on backend' : 'not configured'}
-                </p>
-                <label>
-                  API Key
-                  <input
-                    type="password"
-                    value={apiKeyDraft}
-                    placeholder={appSettings.openai.hasApiKey ? 'Configured. Enter a new key to replace it.' : 'sk-...'}
-                    onChange={(event) => setApiKeyDraft(event.target.value)}
-                  />
-                </label>
-                <label>
-                  Model
-                  <select value={selectedModelDraft} onChange={(event) => setSelectedModelDraft(event.target.value)}>
-                    <option value="">Choose a model</option>
-                    {modelOptions.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="settings-actions">
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => void loadModels({ silentNoKey: false })}
-                    disabled={isModelsLoading || !appSettings.openai.hasApiKey}
-                  >
-                    {isModelsLoading ? 'Refreshing...' : 'Refresh models'}
-                  </button>
-                  <button type="button" onClick={() => void saveSettings()}>
-                    Save OpenAI settings
-                  </button>
-                </div>
-                {!appSettings.openai.hasApiKey && !settingsError ? (
-                  <p className="muted">Add an API key first, then refresh models to populate the picker.</p>
-                ) : null}
-                {settingsError ? <p className="feedback feedback--error">{settingsError}</p> : null}
-                {settingsMessage ? <p className="feedback">{settingsMessage}</p> : null}
-              </div>
-
-              <div className="settings-section">
-                <div className="panel-header">
-                  <h2>Notion</h2>
-                  <span className={['status-pill', appSettings.notion.tokenConfigured ? 'is-online' : 'is-offline'].join(' ')}>
-                    {appSettings.notion.tokenConfigured ? 'configured' : 'not configured'}
-                  </span>
-                </div>
-                <p className="muted">
-                  Share your notes and progress databases with the Notion integration, then save the token and database IDs here.
-                </p>
-                <label>
-                  Integration Token
-                  <input
-                    type="password"
-                    value={notionTokenDraft}
-                    placeholder={appSettings.notion.tokenConfigured ? 'Configured. Enter a new token to replace it.' : 'secret_...'}
-                    onChange={(event) => setNotionTokenDraft(event.target.value)}
-                  />
-                </label>
-                <label>
-                  Notes Database ID
-                  <input
-                    value={notionNotesDatabaseIdDraft}
-                    placeholder="Database ID for AI note lookup"
-                    onChange={(event) => setNotionNotesDatabaseIdDraft(event.target.value)}
-                  />
-                </label>
-                <div className="settings-actions">
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => void loadNotionNotesSchema()}
-                    disabled={isNotionNotesSchemaLoading || !notionNotesDatabaseIdDraft.trim()}
-                  >
-                    {isNotionNotesSchemaLoading ? 'Loading schema...' : 'Load notes schema'}
-                  </button>
-                </div>
-                {notionNotesSchema ? (
-                  <div className="settings-section">
-                    <div className="panel-header">
-                      <h2>Notes Field Mapping</h2>
-                      <span>{notionNotesSchema.properties.length} fields</span>
-                    </div>
-                    <p className="muted">
-                      Map your notes database properties so ProjectPlanner can read the right note metadata before ranking and loading note content.
-                    </p>
-                    {(Object.keys(notionNotesFieldLabels) as NotionNotesFieldKey[]).map((fieldKey) => {
-                      const typeByField: Record<NotionNotesFieldKey, string[]> = {
-                        titleField: ['title'],
-                        summaryField: ['rich_text'],
-                        statusField: ['status', 'select'],
-                        tagsField: ['multi_select'],
-                        scopeField: ['rich_text', 'select', 'multi_select'],
-                      };
-                      const availableProperties = notionNotesSchema.properties.filter((property) =>
-                        typeByField[fieldKey].includes(property.type),
-                      );
-
-                      return (
-                        <label key={fieldKey}>
-                          {notionNotesFieldLabels[fieldKey]}
-                          <select
-                            value={notionNotesFieldMapDraft[fieldKey]}
-                            onChange={(event) =>
-                              setNotionNotesFieldMapDraft((current) => ({
-                                ...current,
-                                [fieldKey]: event.target.value,
-                              }))
-                            }
-                          >
-                            <option value="">Choose a field</option>
-                            {availableProperties.map((property) => (
-                              <option key={`${fieldKey}-${property.id}`} value={property.name}>
-                                {property.name} ({property.type})
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                <label>
-                  Progress Database ID
-                  <input
-                    value={notionProgressDatabaseIdDraft}
-                    placeholder="Database ID for session sync logs"
-                    onChange={(event) => setNotionProgressDatabaseIdDraft(event.target.value)}
-                  />
-                </label>
-                <div className="settings-actions">
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => void loadNotionProgressSchema()}
-                    disabled={isNotionProgressSchemaLoading || !notionProgressDatabaseIdDraft.trim()}
-                  >
-                    {isNotionProgressSchemaLoading ? 'Loading schema...' : 'Load progress schema'}
-                  </button>
-                </div>
-                {notionProgressSchema ? (
-                  <div className="settings-section">
-                    <div className="panel-header">
-                      <h2>Progress Field Mapping</h2>
-                      <span>{notionProgressSchema.properties.length} fields</span>
-                    </div>
-                    <p className="muted">
-                      Map your existing Notion database properties to the fields ProjectPlanner needs for progress sync.
-                    </p>
-                    {(Object.keys(notionProgressFieldLabels) as NotionProgressFieldKey[]).map((fieldKey) => {
-                      const typeByField: Record<NotionProgressFieldKey, string[]> = {
-                        titleField: ['title'],
-                        projectNameField: ['rich_text'],
-                        syncedAtField: ['date'],
-                        changedCountField: ['number'],
-                        completedCountField: ['number'],
-                        scopeField: ['rich_text'],
-                      };
-                      const availableProperties = notionProgressSchema.properties.filter((property) =>
-                        typeByField[fieldKey].includes(property.type),
-                      );
-
-                      return (
-                        <label key={fieldKey}>
-                          {notionProgressFieldLabels[fieldKey]}
-                          <select
-                            value={notionProgressFieldMapDraft[fieldKey]}
-                            onChange={(event) =>
-                              setNotionProgressFieldMapDraft((current) => ({
-                                ...current,
-                                [fieldKey]: event.target.value,
-                              }))
-                            }
-                          >
-                            <option value="">Choose a field</option>
-                            {availableProperties.map((property) => (
-                              <option key={`${fieldKey}-${property.id}`} value={property.name}>
-                                {property.name} ({property.type})
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                <label className="settings-row">
-                  <div>
-                    <strong>Use Notion Notes For AI Context</strong>
-                    <p className="muted">Search matching notes from your configured Notion notes database before AI requests.</p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={useNotionNotesForAiContextDraft}
-                    onChange={(event) => setUseNotionNotesForAiContextDraft(event.target.checked)}
-                  />
-                </label>
-                <label className="settings-row">
-                  <div>
-                    <strong>Enable Notion Progress Logging</strong>
-                    <p className="muted">Track planner changes locally and let you sync them as one session entry.</p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={enableNotionProgressSyncDraft}
-                    onChange={(event) => setEnableNotionProgressSyncDraft(event.target.checked)}
-                  />
-                </label>
-                <div className="settings-actions">
-                  <button type="button" onClick={() => void saveNotionConfiguration()}>
-                    Save Notion settings
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => void syncCurrentSessionToNotion()}
-                    disabled={!isNotionProgressSyncAvailable || isNotionSyncing}
-                  >
-                    {isNotionSyncing ? 'Syncing...' : 'Sync current session to Notion'}
-                  </button>
-                </div>
-                <p className="muted">
-                  Session journal: {sessionJournal.length} tracked change{sessionJournal.length === 1 ? '' : 's'} ready to sync.
-                </p>
-                {notionSettingsError ? <p className="feedback feedback--error">{notionSettingsError}</p> : null}
-                {notionSettingsMessage ? <p className="feedback">{notionSettingsMessage}</p> : null}
+                <p className="muted">Workflow state is stored through the backend graph API and PostgreSQL. AI, OpenAI, and Notion features remain removed.</p>
+                <p className="muted">Current project ID: {projectId}</p>
+                <p className="muted">Stored project library: {storedProjects.length > 0 ? `${storedProjects.length} known projects` : 'open the Load dialog to refresh'}</p>
               </div>
             </div>
           </div>

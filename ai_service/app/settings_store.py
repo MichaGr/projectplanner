@@ -1,1 +1,0 @@
-from .repositories.settings_repository import SettingsRepository as SettingsStore

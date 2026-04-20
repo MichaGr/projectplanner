@@ -1,304 +1,45 @@
-export type BackendStatus = 'online' | 'offline';
-
-export type AppSettings = {
-  backendStatus: BackendStatus;
-  openai: {
-    hasApiKey: boolean;
-    selectedModel: string | null;
-  };
-  notion: {
-    tokenConfigured: boolean;
-    notesDatabaseId: string | null;
-    progressDatabaseId: string | null;
-    useNotesForAiContext: boolean;
-    enableProgressSync: boolean;
-    progressFieldMap: Record<string, string | null>;
-    notesFieldMap: Record<string, string | null>;
-  };
+export type ProjectGraphResponse = {
+  projectId: string;
+  project: unknown;
 };
 
-export type ModelOption = {
-  id: string;
-  label: string;
-  ownedBy?: string | null;
-};
-
-export type AIConversationMessage = {
-  id: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-};
-
-export type AIDocument = {
-  id: string;
-  name: string;
-  pageCount: number;
-  excerpt: string;
-  content: string;
-};
-
-export type AIContext = {
-  targetType: 'root' | 'group' | 'node';
-  targetId: string | null;
-  targetTitle: string;
-  scopeId: string | null;
-};
-
-export type AIResolvedIntent = {
-  intent:
-    | 'describe_node'
-    | 'define_completion_criteria'
-    | 'create_task'
-    | 'split_task'
-    | 'split_into_subtasks'
-    | 'rework_graph'
-    | 'review_memory'
-    | 'add_update_memory';
-  confidence: 'low' | 'medium' | 'high';
-  rationale: string;
-};
-
-export type AINodeContextSummary = {
-  id: string;
-  kind: 'task' | 'group';
+export type StoredProjectSummary = {
+  projectId: string;
   title: string;
-  parentId?: string | null;
   description: string;
-  completionCriteria: string;
-  status: 'todo' | 'done';
-  relationship: string;
+  graphVersion: number;
+  nodeCount: number;
+  edgeCount: number;
+  updatedAt: string;
 };
 
-export type AIContextBundle = {
-  target?: AINodeContextSummary | null;
-  ancestorGroup?: AINodeContextSummary | null;
-  surroundingNodes: AINodeContextSummary[];
-  blockingNodes: AINodeContextSummary[];
-  scopeSummary: string;
-};
-
-export type AIPlannerOutput = {
-  resolvedIntent: AIResolvedIntent;
-  intentSummary: string;
-  contextSummary: string;
-  openQuestions: string[];
-  contextBundle: AIContextBundle;
-};
-
-export type UpdateNodeFieldsOperation = {
-  type: 'update_node_fields';
-  targetType: 'root' | 'node';
-  targetId: string;
-  fields: {
-    title?: string;
-    description?: string;
-    completionCriteria?: string;
-  };
-};
-
-export type CreateGroupOperation = {
-  type: 'create_group';
-  group: {
-    id: string;
-    title: string;
-    description: string;
-    completionCriteria: string;
-    parentId?: string;
-    position: { x: number; y: number };
-    tags?: string[];
-    size?: { width: number; height: number };
-  };
-};
-
-export type CreateTasksOperation = {
-  type: 'create_tasks';
-  tasks: Array<{
-    id: string;
-    title: string;
-    description: string;
-    completionCriteria: string;
-    parentId?: string;
-    position: { x: number; y: number };
-    tags?: string[];
-  }>;
-};
-
-export type CreateEdgesOperation = {
-  type: 'create_edges';
-  edges: Array<{
-    id: string;
-    source: string;
-    target: string;
-  }>;
-};
-
-export type GraphMutationOperation =
-  | UpdateNodeFieldsOperation
-  | CreateGroupOperation
-  | CreateTasksOperation
-  | CreateEdgesOperation;
-
-export type AIProposal = {
-  proposalId: string;
-  summary: string;
-  context: AIContext;
-  intentSummary: string;
-  contextSummary: string;
-  changePlan: string[];
-  affectedTargets: string[];
-  openQuestions: string[];
-  operations: GraphMutationOperation[];
-};
-
-export type ContextItem = {
-  id: string;
-  kind:
-    | 'reference'
-    | 'note'
-    | 'evaluation'
-    | 'concept'
-    | 'fact'
-    | 'guideline'
-    | 'constraint'
-    | 'decision'
-    | 'question';
-  content: string;
-  scope: 'global' | 'project' | 'node';
-  linked_node_ids: string[];
-  status: 'active' | 'stale' | 'candidate_for_archive' | 'archived' | 'dismissed';
-  created_at: string;
-  updated_at: string;
-};
-
-export type ReviewIssue = {
-  id: string;
-  type: 'conflict' | 'duplication' | 'staleness' | 'missing_dependency' | 'preference_drift' | 'prune_candidate';
-  summary: string;
-  description: string;
-  affected_item_ids: string[];
-  suggested_actions: string[];
-  status: 'open' | 'reviewed' | 'resolved' | 'dismissed';
-  created_at: string;
-  resolved_at?: string | null;
-};
-
-export type PreferenceUpdateProposal = {
-  id: string;
-  type: 'user' | 'project';
-  category: string;
-  proposed_rule: string;
-  evidence_refs: string[];
-  rationale: string;
-  status: 'pending_review' | 'accepted' | 'rejected';
-  created_at: string;
-};
-
-export type SessionSummary = {
-  id: string;
-  action_type: AIResolvedIntent['intent'];
-  summary: string;
-  touched_node_ids: string[];
-  touched_memory_item_ids: string[];
-  created_items: string[];
-  proposed_updates: string[];
-  created_at: string;
-};
-
-export type AIMemoryResult = {
-  actionType: AIResolvedIntent['intent'];
-  summary: string;
-  createdItems: ContextItem[];
-  updatedItems: ContextItem[];
-  reviewIssues: ReviewIssue[];
-  preferenceProposals: PreferenceUpdateProposal[];
-  warnings: string[];
-  sessionSummary?: SessionSummary | null;
-};
-
-export type AIChatResponse = {
-  message: string;
-  proposal?: AIProposal | null;
-  memoryResult?: AIMemoryResult | null;
-};
-
-export type AIGraphNode = {
-  id: string;
-  label: string;
-  kind: 'entry' | 'planner' | 'router' | 'worker' | 'formatter' | 'terminal';
-  description: string;
-  inputs: string[];
-  outputs: string[];
-};
-
-export type AIGraphEdge = {
-  id: string;
-  source: string;
-  target: string;
-  type: 'start' | 'linear' | 'conditional' | 'handoff' | 'end';
-  label: string;
-};
-
-export type AIGraphLegendItem = {
-  kind: string;
-  label: string;
-  description: string;
-};
-
-export type AIGraphResponse = {
-  version: string;
-  source: 'langgraph' | 'agent-orchestrator';
-  nodes: AIGraphNode[];
-  edges: AIGraphEdge[];
-  legend?: AIGraphLegendItem[];
-};
-
-export type NotionProgressEntry = {
-  type:
-    | 'create_node'
-    | 'update_node'
-    | 'update_root'
-    | 'status_change'
-    | 'create_edge'
-    | 'delete_node'
-    | 'delete_edge'
-    | 'apply_proposal';
-  title: string;
-  detail: string;
-  scopeTitle?: string | null;
-  completed?: boolean;
-};
-
-export type NotionDatabaseProperty = {
-  id: string;
-  name: string;
-  type: string;
-};
-
-export type NotionDatabaseSchemaResponse = {
-  databaseId: string;
-  dataSourceId: string;
-  title: string;
-  properties: NotionDatabaseProperty[];
-};
-
-const normalizeProposal = (proposal: AIProposal | null | undefined): AIProposal | null => {
-  if (!proposal) {
-    return null;
-  }
-
-  return {
-    ...proposal,
-    intentSummary: proposal.intentSummary ?? proposal.summary ?? 'Review the requested change.',
-    contextSummary:
-      proposal.contextSummary ??
-      `Working in the ${proposal.context.targetTitle} context (${proposal.context.targetType}).`,
-    changePlan: Array.isArray(proposal.changePlan) ? proposal.changePlan : [proposal.summary ?? 'Apply the proposed graph changes.'],
-    affectedTargets: Array.isArray(proposal.affectedTargets)
-      ? proposal.affectedTargets
-      : [proposal.context.targetTitle],
-    openQuestions: Array.isArray(proposal.openQuestions) ? proposal.openQuestions : [],
-  };
-};
+export type GraphOperationRequest =
+  | {
+      type: 'replace_graph';
+      project: unknown;
+    }
+  | {
+      type: 'update_node_fields';
+      targetType: 'root' | 'node';
+      targetId: string;
+      fields: {
+        title?: string;
+        description?: string;
+        completionCriteria?: string;
+      };
+    }
+  | {
+      type: 'create_group';
+      group: unknown;
+    }
+  | {
+      type: 'create_tasks';
+      tasks: unknown[];
+    }
+  | {
+      type: 'create_edges';
+      edges: unknown[];
+    };
 
 export class ApiError extends Error {
   status: number;
@@ -310,6 +51,29 @@ export class ApiError extends Error {
   }
 }
 
+const wait = (ms: number) =>
+  new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+
+const fetchWithRetry = async (input: RequestInfo | URL, init?: RequestInit, retries = 4): Promise<Response> => {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await fetch(input, init);
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries) {
+        break;
+      }
+      await wait(300 * attempt);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Failed to fetch');
+};
+
 const ensureOk = async <T>(response: Response): Promise<T> => {
   if (!response.ok) {
     let message = 'Request failed.';
@@ -320,7 +84,7 @@ const ensureOk = async <T>(response: Response): Promise<T> => {
         message = payload.detail;
       }
     } catch {
-      // Ignore JSON parse failures and keep the generic message.
+      // Ignore parse errors and keep the generic message.
     }
 
     throw new ApiError(message, response.status);
@@ -329,80 +93,12 @@ const ensureOk = async <T>(response: Response): Promise<T> => {
   return (await response.json()) as T;
 };
 
-export const fetchSettings = async (): Promise<AppSettings> => {
-  const response = await fetch('/api/settings');
-  return ensureOk<AppSettings>(response);
-};
-
-export const fetchModels = async (): Promise<ModelOption[]> => {
-  const response = await fetch('/api/models');
-  return ensureOk<ModelOption[]>(response);
-};
-
-export const fetchAIGraph = async (): Promise<AIGraphResponse> => {
-  const response = await fetch('/api/ai/graph');
-  return ensureOk<AIGraphResponse>(response);
-};
-
-export const saveOpenAISettings = async (payload: {
-  apiKey?: string;
-  selectedModel?: string | null;
-}): Promise<AppSettings> => {
-  const response = await fetch('/api/settings/openai', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return ensureOk<AppSettings>(response);
-};
-
-export const saveNotionSettings = async (payload: {
-  token?: string;
-  notesDatabaseId?: string | null;
-  progressDatabaseId?: string | null;
-  useNotesForAiContext: boolean;
-  enableProgressSync: boolean;
-  progressFieldMap: Record<string, string | null>;
-  notesFieldMap: Record<string, string | null>;
-}): Promise<AppSettings> => {
-  const response = await fetch('/api/settings/notion', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return ensureOk<AppSettings>(response);
-};
-
-export const fetchNotionDatabaseSchema = async (payload: {
-  databaseId: string;
-  token?: string;
-}): Promise<NotionDatabaseSchemaResponse> => {
-  const response = await fetch('/api/notion/database-schema', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return ensureOk<NotionDatabaseSchemaResponse>(response);
-};
-
-export const sendAIChat = async (payload: {
+export const createProjectGraph = async (payload: {
   projectId: string;
-  message: string;
-  context: AIContext;
-  project: unknown;
-  conversation: AIConversationMessage[];
-  documents?: AIDocument[];
-}): Promise<AIChatResponse> => {
-  const response = await fetch('/api/ai/chat', {
+  title?: string;
+  project?: unknown;
+}): Promise<ProjectGraphResponse> => {
+  const response = await fetch('/api/projects', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -410,40 +106,35 @@ export const sendAIChat = async (payload: {
     body: JSON.stringify(payload),
   });
 
-  const result = await ensureOk<AIChatResponse>(response);
-  return {
-    ...result,
-    proposal: normalizeProposal(result.proposal),
-    memoryResult: result.memoryResult ?? null,
-  };
+  return ensureOk<ProjectGraphResponse>(response);
 };
 
-export const uploadAIDocuments = async (files: File[]): Promise<AIDocument[]> => {
-  const body = new FormData();
-  for (const file of files) {
-    body.append('files', file);
-  }
-
-  const response = await fetch('/api/ai/documents', {
-    method: 'POST',
-    body,
-  });
-
-  return ensureOk<AIDocument[]>(response);
+export const fetchProjectGraph = async (projectId: string): Promise<ProjectGraphResponse> => {
+  const response = await fetchWithRetry(`/api/projects/${encodeURIComponent(projectId)}/graph`);
+  return ensureOk<ProjectGraphResponse>(response);
 };
 
-export const syncNotionProgress = async (payload: {
-  project: unknown;
-  context: AIContext;
-  entries: NotionProgressEntry[];
-}): Promise<{ title: string; syncedEntries: number }> => {
-  const response = await fetch('/api/notion/progress-sync', {
+export const listStoredProjects = async (): Promise<StoredProjectSummary[]> => {
+  const response = await fetchWithRetry('/api/projects');
+  return ensureOk<StoredProjectSummary[]>(response);
+};
+
+export const applyProjectGraphOperations = async (
+  projectId: string,
+  operations: GraphOperationRequest[],
+): Promise<ProjectGraphResponse> => {
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/operations`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ operations }),
   });
 
-  return ensureOk<{ title: string; syncedEntries: number }>(response);
+  return ensureOk<ProjectGraphResponse>(response);
+};
+
+export const checkWorkflowService = async (): Promise<{ status: string }> => {
+  const response = await fetchWithRetry('/api/health');
+  return ensureOk<{ status: string }>(response);
 };

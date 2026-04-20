@@ -126,11 +126,32 @@
     border-radius: var(--radius-architectural);
   }
 
-  .topbar__brand-icon svg,
-  .topbar__search-icon svg,
-  .icon-button svg,
-  .node-actions__button svg {
-    @apply block h-full w-full;
+  .app-icon {
+    display: block;
+    width: 1.25rem;
+    height: 1.25rem;
+    font-size: 1.25rem;
+  }
+
+  .app-icon svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    fill: currentColor;
+  }
+
+  .topbar__brand-icon .app-icon {
+    width: 1.9rem;
+    height: 1.9rem;
+  }
+
+  .topbar__search-icon .app-icon,
+  .icon-button .app-icon,
+  .node-actions__button .app-icon,
+  .multi-selection-actions__button .app-icon,
+  .ai-dialog-button--icon .app-icon,
+  .group-entry-node__warning .app-icon {
+    @apply block;
   }
 
   .topbar__search-stack {
@@ -153,6 +174,11 @@
 
   .topbar__search-icon {
     @apply pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant;
+  }
+
+  .topbar__search-icon .app-icon {
+    width: 1rem;
+    height: 1rem;
   }
 
   .search-overlay {
@@ -446,10 +472,16 @@
     @apply pointer-events-none absolute inset-x-0 top-0 z-10;
   }
 
-  .canvas-shell__breadcrumbs {
-    @apply pointer-events-auto absolute top-6 bg-surface-dim/40 px-4 py-3 backdrop-blur-architectural;
+  .canvas-shell__nav {
+    @apply pointer-events-auto absolute top-6 flex items-start gap-3;
     left: 24rem;
+    width: max-content;
     max-width: calc(100% - 50rem);
+  }
+
+  .canvas-shell__breadcrumbs {
+    @apply min-w-0 bg-surface-dim/40 px-4 py-3 backdrop-blur-architectural;
+    max-width: 100%;
     border-radius: var(--radius-architectural);
     box-shadow: inset 0 0 0 1px rgba(225, 195, 255, 0.12);
   }
@@ -467,12 +499,6 @@
 
   .canvas-glass-button:hover {
     background: rgba(225, 195, 255, 0.14);
-  }
-
-  .canvas-shell__overlay .canvas-glass-button {
-    position: absolute;
-    top: 1.5rem;
-    right: 24rem;
   }
 
   .canvas-shell--ai-graph {
@@ -511,6 +537,10 @@
   .floating-properties-panel {
     @apply right-6 top-6;
     width: 22rem;
+  }
+
+  .floating-properties-panel--resizable {
+    max-width: calc(100% - 3rem);
   }
 
   .floating-properties-panel--graph {
@@ -655,7 +685,7 @@
     height: 2.5rem;
   }
 
-  .ai-dialog-button svg {
+  .ai-dialog-button .app-icon {
     width: 1rem;
     height: 1rem;
   }
@@ -680,6 +710,10 @@
 
   .panel-resizer {
     @apply absolute left-0 top-0 h-full w-2 -translate-x-1/2 cursor-col-resize bg-transparent p-0 hover:bg-primary/10;
+  }
+
+  .panel-resizer--left {
+    @apply z-10;
   }
 
   .properties-panel__masthead {
@@ -873,6 +907,60 @@
     @apply flex flex-col gap-6 p-8;
   }
 
+  .project-library-overlay__panel {
+    max-width: 52rem;
+    background:
+      radial-gradient(circle at top left, rgba(225, 195, 255, 0.14), transparent 40%),
+      rgba(15, 12, 20, 0.92);
+    backdrop-filter: blur(20px);
+  }
+
+  .project-library-overlay {
+    @apply flex h-full flex-col gap-6 p-8;
+  }
+
+  .project-library-list {
+    @apply grid gap-4 overflow-y-auto pr-1;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  }
+
+  .project-library-card {
+    @apply flex flex-col gap-4 p-5 text-left transition hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50;
+    background: rgba(225, 195, 255, 0.06);
+    backdrop-filter: blur(14px);
+    border-radius: var(--radius-architectural);
+    box-shadow:
+      inset 0 0 0 1px rgba(225, 195, 255, 0.16),
+      0 24px 40px -24px rgba(0, 0, 0, 0.45);
+  }
+
+  .project-library-card.is-current {
+    box-shadow:
+      inset 0 0 0 1px rgba(139, 214, 180, 0.26),
+      0 24px 40px -24px rgba(0, 0, 0, 0.45);
+  }
+
+  .project-library-card__header,
+  .project-library-card__footer,
+  .project-library-card__meta {
+    @apply flex items-start justify-between gap-3;
+  }
+
+  .project-library-card__header h3 {
+    @apply font-headline text-xl text-on-surface;
+    letter-spacing: -0.03em;
+  }
+
+  .project-library-card__meta {
+    @apply flex-wrap text-xs uppercase text-on-surface-variant;
+    letter-spacing: 0.16em;
+  }
+
+  .project-library-card__footer {
+    @apply items-center text-xs uppercase text-primary;
+    letter-spacing: 0.18em;
+  }
+
   .settings-row {
     @apply flex flex-row items-start justify-between gap-4 bg-surface-high/70 px-4 py-4;
     border-radius: var(--radius-architectural);
@@ -933,8 +1021,21 @@
   .group-entry-node,
   .agent-card-node,
   .agent-pill-node {
-    @apply relative h-full w-full bg-surface px-5 py-5 text-on-surface shadow-ambient;
+    @apply relative h-full w-full bg-surface px-5 py-5 text-on-surface shadow-ambient transition-colors duration-150;
     border-radius: var(--radius-architectural);
+    transition:
+      background-color 150ms ease,
+      box-shadow 150ms ease;
+  }
+
+  .task-node:hover,
+  .group-entry-node:hover,
+  .agent-card-node:hover,
+  .agent-pill-node:hover {
+    @apply bg-surface-high;
+    box-shadow:
+      inset 0 0 0 1px rgba(225, 195, 255, 0.18),
+      0 0 0 1px rgba(225, 195, 255, 0.08);
   }
 
   .task-node,
@@ -1012,6 +1113,17 @@
 
   .group-entry-node__eyebrow {
     color: #a7adb8;
+    @apply inline-flex items-center gap-2;
+  }
+
+  .group-entry-node__warning {
+    @apply inline-flex h-4 w-4 items-center justify-center;
+    color: #fdc15a;
+  }
+
+  .group-entry-node__warning svg {
+    width: 0.95rem;
+    height: 0.95rem;
   }
 
   .task-node.is-available .task-node__eyebrow {
