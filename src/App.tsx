@@ -32,6 +32,7 @@ import searchIconSvg from '../material-design-icons-4.0.0/src/action/search/mate
 import openInNewIconSvg from '../material-design-icons-4.0.0/src/action/open_in_new/materialicons/24px.svg?raw';
 import warningIconSvg from '../material-design-icons-4.0.0/src/alert/warning/materialicons/24px.svg?raw';
 import deviceHubIconSvg from '../material-design-icons-4.0.0/src/hardware/device_hub/materialicons/24px.svg?raw';
+import accountTreeIconSvg from '../material-design-icons-4.0.0/src/notification/account_tree/materialiconsoutlined/24px.svg?raw';
 import checkIconSvg from '../material-design-icons-4.0.0/src/navigation/check/materialicons/24px.svg?raw';
 import closeIconSvg from '../material-design-icons-4.0.0/src/navigation/close/materialicons/24px.svg?raw';
 
@@ -1284,7 +1285,7 @@ const ToolbarIcon = ({ name }: { name: MaterialIconName }) => (
   <span className="app-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: materialIconSvgs[name] }} />
 );
 
-const Graph3Icon = () => <ToolbarIcon name="device_hub" />;
+const Graph3Icon = () => <span className="app-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: accountTreeIconSvg }} />;
 
 const NodeActions = ({ data }: { data: RenderNodeData }) => (
   <div className="node-actions nodrag nopan">
