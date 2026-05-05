@@ -520,8 +520,20 @@
 
   .floating-available-panel,
   .floating-properties-panel,
-  .floating-ai-dialog {
+  .floating-ai-dialog,
+  .floating-ai-panel {
     @apply absolute z-20;
+  }
+
+  .floating-left-column {
+    @apply absolute left-6 top-6 z-20 flex flex-col gap-4;
+    width: 21rem;
+  }
+
+  .floating-left-column > .floating-available-panel,
+  .floating-left-column > .floating-ai-panel {
+    @apply static;
+    width: 100%;
   }
 
   .floating-available-panel {
@@ -537,6 +549,10 @@
   .floating-properties-panel {
     @apply right-6 top-6;
     width: 22rem;
+  }
+
+  .floating-ai-panel {
+    pointer-events: auto;
   }
 
   .floating-properties-panel--resizable {
@@ -567,6 +583,10 @@
     max-height: calc(100vh - 9rem);
   }
 
+  .ai-panel-shell {
+    max-height: calc(100vh - 13rem);
+  }
+
   .ai-dialog-panel {
     @apply min-h-0 w-full;
     height: 100%;
@@ -581,6 +601,10 @@
 
   .ai-dialog-panel__scroll {
     @apply min-h-0 flex-1 overflow-y-auto pr-1;
+  }
+
+  .ai-panel-scroll {
+    max-height: 20rem;
   }
 
   .ai-dialog-panel__scroll {

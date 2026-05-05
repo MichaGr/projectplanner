@@ -27,6 +27,7 @@ import {
   listStoredProjects,
   StoredProjectSummary,
 } from './api';
+import { AiPanel } from './AiPanel';
 import addIconSvg from '../material-design-icons-4.0.0/src/content/add/materialicons/24px.svg?raw';
 import searchIconSvg from '../material-design-icons-4.0.0/src/action/search/materialicons/24px.svg?raw';
 import openInNewIconSvg from '../material-design-icons-4.0.0/src/action/open_in_new/materialicons/24px.svg?raw';
@@ -166,6 +167,8 @@ const STORAGE_KEY = 'project-planner-state-v2';
 const THEME_STORAGE_KEY = 'project-planner-theme-v1';
 const LEFT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-left-panel-width-v1';
 const RIGHT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-right-panel-width-v1';
+const OPENAI_API_KEY_STORAGE_KEY = 'project-planner-openai-api-key-v1';
+const SUPERMEMORY_API_KEY_STORAGE_KEY = 'project-planner-supermemory-api-key-v1';
 const mainTab: TabDescriptor = { id: 'main', kind: 'main' };
 const groupSize = { width: 360, height: 180 };
 const taskSize = { width: 260, height: 120 };
@@ -1261,6 +1264,22 @@ const getStoredRightPanelWidth = () => {
   return Number.isFinite(parsed) ? clampRightPanelWidth(parsed) : 440;
 };
 
+const getStoredSupermemoryApiKey = () => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  return window.localStorage.getItem(SUPERMEMORY_API_KEY_STORAGE_KEY) ?? '';
+};
+
+const getStoredOpenaiApiKey = () => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  return window.localStorage.getItem(OPENAI_API_KEY_STORAGE_KEY) ?? '';
+};
+
 const nextAvailableOffset = (nodes: PlannerNodeRecord[], parentId?: string) => {
   const siblings = nodes.filter((node) => node.parentId === parentId);
   return {
@@ -1499,6 +1518,8 @@ function PlannerApp() {
   const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking');
   const [sessionJournal, setSessionJournal] = useState<SessionJournalEntry[]>([]);
   const [rightPanelWidth, setRightPanelWidth] = useState(() => getStoredRightPanelWidth());
+  const [openaiApiKey, setOpenaiApiKey] = useState(() => getStoredOpenaiApiKey());
+  const [supermemoryApiKey, setSupermemoryApiKey] = useState(() => getStoredSupermemoryApiKey());
   const [dragDropTarget, setDragDropTarget] = useState<NodeDropTarget>(null);
   const [dragPreviewNodeId, setDragPreviewNodeId] = useState<string | null>(null);
   const [flowViewport, setFlowViewport] = useState({ x: 0, y: 0, zoom: 1 });
@@ -1550,6 +1571,14 @@ function PlannerApp() {
   useEffect(() => {
     window.localStorage.setItem(RIGHT_PANEL_WIDTH_STORAGE_KEY, String(rightPanelWidth));
   }, [rightPanelWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(OPENAI_API_KEY_STORAGE_KEY, openaiApiKey);
+  }, [openaiApiKey]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SUPERMEMORY_API_KEY_STORAGE_KEY, supermemoryApiKey);
+  }, [supermemoryApiKey]);
 
   useEffect(() => {
     snapshotRef.current = snapshot;
@@ -3031,23 +3060,38 @@ function PlannerApp() {
               </p>
             ) : null}
 
-            <aside className="floating-available-panel" aria-label="Available work">
-              <div className="panel-header floating-panel-header">
-                <h2>Available Work</h2>
-                <span>{availableTasks.length}</span>
-              </div>
-              <div className="floating-task-list">
-                {availableTasks.length === 0 ? (
-                  <p className="muted">No tasks are available yet. Complete a blocker to unlock the next path.</p>
-                ) : (
-                  availableTasks.map((task) => (
-                    <button key={task.id} className="floating-task-card" onClick={() => focusNodeInWorkspace(task)}>
-                      <span>{task.title}</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            </aside>
+            <div className="floating-left-column">
+              <aside className="floating-available-panel" aria-label="Available work">
+                <div className="panel-header floating-panel-header">
+                  <h2>Available Work</h2>
+                  <span>{availableTasks.length}</span>
+                </div>
+                <div className="floating-task-list">
+                  {availableTasks.length === 0 ? (
+                    <p className="muted">No tasks are available yet. Complete a blocker to unlock the next path.</p>
+                  ) : (
+                    availableTasks.map((task) => (
+                      <button key={task.id} className="floating-task-card" onClick={() => focusNodeInWorkspace(task)}>
+                        <span>{task.title}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </aside>
+
+              <aside className="floating-ai-panel" aria-label="AI assistant">
+                <AiPanel
+                  projectId={projectId}
+                  activeTabId={activeTabId}
+                  selectedNodeIds={selectedNodeIds}
+                  visibleNodeIds={scopeNodes.map((node) => node.id)}
+                  openaiApiKey={openaiApiKey}
+                  supermemoryApiKey={supermemoryApiKey}
+                  disabled={isProjectGraphLoading}
+                  onApplied={(project) => applyServerProjectGraph(projectIdRef.current, project as PlannerSnapshot)}
+                />
+              </aside>
+            </div>
 
             <main
                 className="canvas-shell"
@@ -3377,12 +3421,54 @@ function PlannerApp() {
 
               <div className="settings-section">
                 <div className="panel-header">
+                  <h2>AI Model</h2>
+                  <span className={['status-pill', openaiApiKey.trim() ? 'is-online' : 'is-offline'].join(' ')}>
+                    {openaiApiKey.trim() ? 'configured' : 'not set'}
+                  </span>
+                </div>
+                <label className="glass-field">
+                  OpenAI API Key
+                  <input
+                    type="password"
+                    value={openaiApiKey}
+                    placeholder="sk-..."
+                    onChange={(event) => setOpenaiApiKey(event.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <p className="muted">Stored in this browser only and sent with AI requests so the assistant can use your OpenAI key without a server restart.</p>
+              </div>
+
+              <div className="settings-section">
+                <div className="panel-header">
+                  <h2>AI Memory</h2>
+                  <span className={['status-pill', supermemoryApiKey.trim() ? 'is-online' : 'is-offline'].join(' ')}>
+                    {supermemoryApiKey.trim() ? 'configured' : 'not set'}
+                  </span>
+                </div>
+                <label className="glass-field">
+                  Supermemory API Key
+                  <input
+                    type="password"
+                    value={supermemoryApiKey}
+                    placeholder="sm_..."
+                    onChange={(event) => setSupermemoryApiKey(event.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <p className="muted">Stored in this browser only and sent with AI chat and proposal apply requests.</p>
+              </div>
+
+              <div className="settings-section">
+                <div className="panel-header">
                   <h2>Persistence</h2>
                   <span className={['status-pill', backendStatus === 'online' ? 'is-online' : backendStatus === 'offline' ? 'is-offline' : ''].join(' ')}>
                     {backendStatus}
                   </span>
                 </div>
-                <p className="muted">Workflow state is stored through the backend graph API and PostgreSQL. AI, OpenAI, and Notion features remain removed.</p>
+                <p className="muted">Workflow state is stored through the backend graph API and PostgreSQL. AI chat proposals are now routed through the dedicated AI service and still apply back through graph operations.</p>
                 <p className="muted">Current project ID: {projectId}</p>
                 <p className="muted">Stored project library: {storedProjects.length > 0 ? `${storedProjects.length} known projects` : 'open the Load dialog to refresh'}</p>
               </div>
