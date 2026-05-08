@@ -1,5 +1,11 @@
-import { FormEvent, useMemo, useState } from 'react';
-import { AiRequestSettings, ApiError, AiChatResponse, applyChatProposalWithSettings, ChatProposal, sendChatMessage } from './api';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AiRequestSettings,
+  ApiError,
+  applyChatProposalWithSettings,
+  ChatProposal,
+  sendChatMessage,
+} from './api';
 
 type ChatMessage = {
   id: string;
@@ -14,6 +20,11 @@ type AiPanelProps = {
   visibleNodeIds: string[];
   openaiApiKey?: string;
   supermemoryApiKey?: string;
+  notionApiKey?: string;
+  notionParentId?: string;
+  taskGraphMcpUrl?: string;
+  supermemoryMcpUrl?: string;
+  notionMcpUrl?: string;
   disabled?: boolean;
   onApplied: (project: unknown) => void;
 };
@@ -27,6 +38,11 @@ export function AiPanel({
   visibleNodeIds,
   openaiApiKey,
   supermemoryApiKey,
+  notionApiKey,
+  notionParentId,
+  taskGraphMcpUrl,
+  supermemoryMcpUrl,
+  notionMcpUrl,
   disabled = false,
   onApplied,
 }: AiPanelProps) {
@@ -34,17 +50,38 @@ export function AiPanel({
     {
       id: uid(),
       role: 'assistant',
-      content: 'Ask for a breakdown, a graph update draft, or a state summary. I will use the current scope and selected nodes as context.',
+      content: 'Ask for a breakdown, a reflection, a graph update draft, or a state summary. I will use the current scope, selected nodes, and configured MCP integrations as context.',
     },
   ]);
   const [composer, setComposer] = useState('');
+  const [isComposerFocused, setIsComposerFocused] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isApplyingProposal, setIsApplyingProposal] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastResponse, setLastResponse] = useState<AiChatResponse | null>(null);
   const [proposal, setProposal] = useState<ChatProposal | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const activeScopeLabel = useMemo(() => lastResponse?.graphContext.scope.activeScopeTitle ?? 'Current scope', [lastResponse]);
+  const settings: AiRequestSettings = useMemo(
+    () => ({
+      openaiApiKey,
+      supermemoryApiKey,
+      notionApiKey,
+      taskGraphMcpUrl,
+      supermemoryMcpUrl,
+      notionMcpUrl,
+    }),
+    [openaiApiKey, supermemoryApiKey, notionApiKey, taskGraphMcpUrl, supermemoryMcpUrl, notionMcpUrl],
+  );
+
+  useEffect(() => {
+    const composerElement = composerRef.current;
+    if (!composerElement) {
+      return;
+    }
+    composerElement.style.height = '0px';
+    const nextHeight = Math.min(composerElement.scrollHeight, 240);
+    composerElement.style.height = `${Math.max(52, nextHeight)}px`;
+  }, [composer]);
 
   const submitMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -67,12 +104,8 @@ export function AiPanel({
           selectedNodeIds,
           visibleNodeIds,
         },
-        settings: {
-          openaiApiKey,
-          supermemoryApiKey,
-        } satisfies AiRequestSettings,
+        settings,
       });
-      setLastResponse(response);
       setProposal(response.proposal);
       setMessages((current) => [...current, { id: uid(), role: 'assistant', content: response.response }]);
     } catch (error) {
@@ -90,14 +123,15 @@ export function AiPanel({
     setError(null);
     setIsApplyingProposal(true);
     try {
-      const response = await applyChatProposalWithSettings(proposal.proposalId, {
-        openaiApiKey,
-        supermemoryApiKey,
-      });
+      const response = await applyChatProposalWithSettings(proposal.proposalId, settings);
       onApplied(response.project);
       setMessages((current) => [
         ...current,
-        { id: uid(), role: 'assistant', content: `Applied proposal "${proposal.summary}" to the workflow graph.` },
+        {
+          id: uid(),
+          role: 'assistant',
+          content: `Applied proposal "${proposal.summary}" to the workflow graph and evaluated memory policy.`,
+        },
       ]);
       setProposal(null);
     } catch (error) {
@@ -111,78 +145,48 @@ export function AiPanel({
     }
   };
 
-  const criticalPath = lastResponse?.graphContext.summaries.criticalPathCandidates[0];
-  const missingDetailCount = lastResponse?.graphContext.summaries.itemsMissingDetails.length ?? 0;
-  const availableCount = lastResponse?.graphContext.availableTasksGlobal.length ?? 0;
+  const isExpanded = isComposerFocused || composer.trim().length > 0 || isSubmitting || isApplyingProposal || messages.length > 1;
 
   return (
-    <div className="glass-panel glass-panel--stack ai-panel-shell">
-      <div className="panel-header floating-panel-header">
-        <h2>AI Assistant</h2>
-        <span>{proposal ? 'Proposal ready' : isSubmitting ? 'Thinking' : 'Ready'}</span>
-      </div>
-
-      <div className="ai-context-card">
-        <strong>{activeScopeLabel}</strong>
-        <p className="muted">
-          Selected: {selectedNodeIds.length > 0 ? `${selectedNodeIds.length} node${selectedNodeIds.length === 1 ? '' : 's'}` : 'none'}
-        </p>
-        {lastResponse ? (
-          <>
-            <p className="muted">Available tasks: {availableCount}</p>
-            <p className="muted">Context score: {Math.round(lastResponse.contextScore * 100)}%</p>
-            <p className="muted">OpenAI: {openaiApiKey?.trim() ? 'configured from Settings' : 'not configured'}</p>
-            <p className="muted">Supermemory: {supermemoryApiKey?.trim() ? 'configured from Settings' : 'not configured'}</p>
-            {criticalPath ? <p className="muted">Critical path candidate: {criticalPath.title}</p> : null}
-            {missingDetailCount > 0 ? <p className="muted">Missing node details: {missingDetailCount}</p> : null}
-          </>
-        ) : (
-          <p className="muted">The assistant will anchor suggestions to the current scope, selected nodes, derived dependency context, and your configured OpenAI and Supermemory keys.</p>
-        )}
-      </div>
-
-      <div className="ai-dialog-panel__scroll ai-panel-scroll">
+    <div className={['glass-panel ai-panel-shell ai-panel-shell--dock', isExpanded ? 'is-expanded' : ''].join(' ')}>
+      <div className="ai-dialog-panel__scroll ai-panel-scroll ai-panel-scroll--dock">
         {messages.map((message) => (
           <div key={message.id} className={['ai-message', message.role === 'assistant' ? 'is-assistant' : 'is-user'].join(' ')}>
-            <span className="ai-message__role">{message.role === 'assistant' ? 'Assistant' : 'You'}</span>
             <p className="muted">{message.content}</p>
           </div>
         ))}
+        {proposal ? (
+          <div className="ai-message is-assistant ai-message--action">
+            <p className="muted">{proposal.summary}</p>
+            <div className="ai-composer__actions">
+              <button type="button" className="primary-action" onClick={applyProposal} disabled={isApplyingProposal}>
+                {isApplyingProposal ? 'Applying...' : 'Apply'}
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {error ? (
+          <div className="ai-message is-assistant ai-message--error">
+            <p className="muted">{error}</p>
+          </div>
+        ) : null}
+        {isSubmitting ? (
+          <div className="ai-message is-assistant ai-message--pending">
+            <p className="muted">Thinking…</p>
+          </div>
+        ) : null}
       </div>
 
-      {proposal ? (
-        <div className="proposal-item proposal-card--review">
-          <strong>{proposal.summary}</strong>
-          <p className="muted">{proposal.rationale}</p>
-          <div className="proposal-targets">
-            <span className="proposal-target-chip">{proposal.graphOperations.length} operation{proposal.graphOperations.length === 1 ? '' : 's'}</span>
-            <span className="proposal-target-chip">{proposal.touchedNodeIds.length} touched node{proposal.touchedNodeIds.length === 1 ? '' : 's'}</span>
-          </div>
-          <div className="proposal-actions">
-            <button type="button" className="primary-action" onClick={applyProposal} disabled={isApplyingProposal}>
-              {isApplyingProposal ? 'Applying...' : 'Apply Proposal'}
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {lastResponse?.clarificationQuestion ? (
-        <div className="glass-card">
-          <h3>Clarification</h3>
-          <p className="muted">{lastResponse.clarificationQuestion}</p>
-        </div>
-      ) : null}
-
-      {error ? <p className="feedback feedback--error">{error}</p> : null}
-
-      <form className="ai-composer" onSubmit={submitMessage}>
-        <label className="glass-field">
-          Prompt
+      <form className="ai-composer ai-composer--dock" onSubmit={submitMessage}>
+        <label className="glass-field ai-composer__field" aria-label="AI prompt">
           <textarea
-            rows={4}
+            ref={composerRef}
+            rows={1}
             value={composer}
             onChange={(event) => setComposer(event.target.value)}
-            placeholder="Break down the selected workstream, explain blockers, or draft an update."
+            onFocus={() => setIsComposerFocused(true)}
+            onBlur={() => setIsComposerFocused(false)}
+            placeholder="Ask the assistant..."
             disabled={disabled || isSubmitting}
           />
         </label>

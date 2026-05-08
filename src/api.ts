@@ -1,6 +1,31 @@
+export type ExternalRef = {
+  system: string;
+  id: string;
+  label?: string;
+  url?: string;
+};
+
+export type MemoryScope = {
+  containerTags: string[];
+  metadataDefaults: Record<string, string>;
+  retrievalDefaults: {
+    limit: number;
+    searchMode: string;
+  };
+};
+
 export type ProjectGraphResponse = {
   projectId: string;
   project: unknown;
+};
+
+export type ProposalDiff = {
+  rootChanges: Array<{ field: string; before: unknown; after: unknown }>;
+  nodeCreates: Array<Record<string, unknown>>;
+  nodeUpdates: Array<{ id: string; title: string; kind: string; changes: Array<{ field: string; before: unknown; after: unknown }> }>;
+  nodeDeletes: Array<Record<string, unknown>>;
+  edgeCreates: Array<Record<string, unknown>>;
+  edgeDeletes: Array<Record<string, unknown>>;
 };
 
 export type GraphContextResponse = {
@@ -24,6 +49,10 @@ export type GraphContextResponse = {
       description: string;
       completionCriteria: string;
       tags: string[];
+      conceptId?: string | null;
+      externalRefs?: ExternalRef[];
+      sourceKind?: string | null;
+      memoryScope?: MemoryScope;
     };
     availableTasksGlobal: Array<{
       id: string;
@@ -55,6 +84,10 @@ export type GraphContextResponse = {
       emptyGroups: Array<{ id: string; title: string }>;
       criticalPathCandidates: Array<{ id: string; title: string; kind: 'task' | 'group'; dependencyDepth: number }>;
     };
+    nodeInventory?: Array<Record<string, unknown>>;
+    changeAwareness?: {
+      graphVersion: number;
+    };
   };
 };
 
@@ -66,6 +99,28 @@ export type StoredProjectSummary = {
   nodeCount: number;
   edgeCount: number;
   updatedAt: string;
+};
+
+export type StoredProposalSummary = {
+  proposalId: string;
+  projectId: string;
+  intent: string;
+  mode: string;
+  workflow: string;
+  summary: string;
+  rationale: string;
+  status: string;
+  graphOperations: GraphOperationRequest[];
+  touchedNodeIds: string[];
+  memoryInsight: string | null;
+  diff: ProposalDiff;
+  actor: string | null;
+  createdAt: string;
+  updatedAt: string;
+  approvedAt: string | null;
+  appliedAt: string | null;
+  rejectedAt: string | null;
+  expiredAt: string | null;
 };
 
 export type GraphOperationRequest =
@@ -81,6 +136,10 @@ export type GraphOperationRequest =
         title?: string;
         description?: string;
         completionCriteria?: string;
+        conceptId?: string | null;
+        sourceKind?: string | null;
+        externalRefs?: ExternalRef[];
+        memoryScope?: MemoryScope;
       };
     }
   | {
@@ -105,29 +164,39 @@ export type ChatUiContext = {
 export type AiRequestSettings = {
   supermemoryApiKey?: string;
   openaiApiKey?: string;
+  notionApiKey?: string;
+  taskGraphMcpUrl?: string;
+  supermemoryMcpUrl?: string;
+  notionMcpUrl?: string;
 };
 
 export type ChatProposal = {
   proposalId: string;
   intent: string;
   mode: string;
+  workflow: string;
   summary: string;
   rationale: string;
+  status: string;
   graphOperations: GraphOperationRequest[];
   touchedNodeIds: string[];
   memoryInsight: string | null;
+  diff: ProposalDiff;
 };
 
 export type AiChatResponse = {
   projectId: string;
   intent: string;
   mode: string;
+  workflow: string;
   contextScore: number;
+  contextBundle: Array<Record<string, unknown>>;
   needsClarification: boolean;
   clarificationQuestion: string | null;
   response: string;
   graphContext: GraphContextResponse['graphContext'];
   memoryContext: Array<Record<string, unknown>>;
+  notionContext: Array<Record<string, unknown>>;
   proposal: ChatProposal | null;
 };
 
@@ -136,6 +205,8 @@ export type ApplyProposalResponse = {
   projectId: string;
   project: unknown;
   appliedAt: string;
+  proposal: ChatProposal;
+  memoryPolicy: Record<string, unknown>;
 };
 
 export class ApiError extends Error {
@@ -216,6 +287,11 @@ export const listStoredProjects = async (): Promise<StoredProjectSummary[]> => {
   return ensureOk<StoredProjectSummary[]>(response);
 };
 
+export const fetchProposalHistory = async (projectId: string): Promise<StoredProposalSummary[]> => {
+  const response = await fetchWithRetry(`/api/projects/${encodeURIComponent(projectId)}/proposals`);
+  return ensureOk<StoredProposalSummary[]>(response);
+};
+
 export const applyProjectGraphOperations = async (
   projectId: string,
   operations: GraphOperationRequest[],
@@ -244,9 +320,7 @@ export const fetchProjectContext = async (
   }
 
   const query = searchParams.toString();
-  const response = await fetchWithRetry(
-    `/api/projects/${encodeURIComponent(projectId)}/context${query ? `?${query}` : ''}`,
-  );
+  const response = await fetchWithRetry(`/api/projects/${encodeURIComponent(projectId)}/context${query ? `?${query}` : ''}`);
   return ensureOk<GraphContextResponse>(response);
 };
 
@@ -267,18 +341,6 @@ export const sendChatMessage = async (payload: {
   return ensureOk<AiChatResponse>(response);
 };
 
-export const applyChatProposal = async (proposalId: string): Promise<ApplyProposalResponse> => {
-  const response = await fetch(`/api/chat/proposals/${encodeURIComponent(proposalId)}/apply`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({}),
-  });
-
-  return ensureOk<ApplyProposalResponse>(response);
-};
-
 export const applyChatProposalWithSettings = async (
   proposalId: string,
   settings?: AiRequestSettings,
@@ -292,6 +354,36 @@ export const applyChatProposalWithSettings = async (
   });
 
   return ensureOk<ApplyProposalResponse>(response);
+};
+
+export const runMemoryConsolidation = async (
+  projectId: string,
+  settings?: AiRequestSettings,
+): Promise<{ projectId: string; summary: Record<string, unknown> }> => {
+  const response = await fetch('/api/ai/memory/consolidate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ projectId, settings }),
+  });
+  return ensureOk(response);
+};
+
+export const writeToNotion = async (payload: {
+  action: 'create_page' | 'append_block_children';
+  payload: Record<string, unknown>;
+  blockId?: string;
+  settings?: AiRequestSettings;
+}): Promise<{ status: string; result: Record<string, unknown> }> => {
+  const response = await fetch('/api/ai/notion/writeback', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  return ensureOk(response);
 };
 
 export const checkWorkflowService = async (): Promise<{ status: string }> => {

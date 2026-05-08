@@ -5,21 +5,28 @@ import os
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal
 from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from langgraph.graph import END, StateGraph
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from .context_assembly import assemble_context_bundle, score_context_bundle
+from .mcp_client import McpClient
+from .memory_policy import classify_memory
 
-WORKFLOW_SERVICE_URL = os.getenv("WORKFLOW_SERVICE_URL", "http://workflow-service:8000")
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
-SUPERMEMORY_API_URL = os.getenv("SUPERMEMORY_API_URL", "https://api.supermemory.ai")
-SUPERMEMORY_API_KEY = os.getenv("SUPERMEMORY_API_KEY")
+TASK_GRAPH_MCP_URL = os.getenv("TASK_GRAPH_MCP_URL", "http://task-graph-mcp:8010/mcp")
+SUPERMEMORY_MCP_URL = os.getenv("SUPERMEMORY_MCP_URL", "http://supermemory-mcp:8011/mcp")
+NOTION_MCP_URL = os.getenv("NOTION_MCP_URL", "http://notion-mcp:8012/mcp")
+
+MAX_PROPOSAL_TASKS = 5
+MAX_PROPOSAL_EDGES = 8
+MIN_PLANNING_SCORE = 0.5
 
 
 class UiContextPayload(BaseModel):
@@ -28,15 +35,37 @@ class UiContextPayload(BaseModel):
     visibleNodeIds: list[str] = Field(default_factory=list)
 
 
+class AiRequestSettings(BaseModel):
+    openaiApiKey: str | None = None
+    supermemoryApiKey: str | None = None
+    notionApiKey: str | None = None
+    taskGraphMcpUrl: str | None = None
+    supermemoryMcpUrl: str | None = None
+    notionMcpUrl: str | None = None
+
+
 class ChatRequest(BaseModel):
     projectId: str
     message: str
     uiContext: UiContextPayload
-    settings: dict[str, str | None] | None = None
+    settings: AiRequestSettings | None = None
 
 
 class ApplyProposalRequest(BaseModel):
-    settings: dict[str, str | None] | None = None
+    settings: AiRequestSettings | None = None
+    actor: str | None = None
+
+
+class ConsolidateMemoryRequest(BaseModel):
+    projectId: str
+    settings: AiRequestSettings | None = None
+
+
+class NotionWritebackRequest(BaseModel):
+    action: Literal["create_page", "append_block_children"]
+    payload: dict[str, Any]
+    blockId: str | None = None
+    settings: AiRequestSettings | None = None
 
 
 class GraphOperationEnvelope(BaseModel):
@@ -54,23 +83,29 @@ class ProposalPayload(BaseModel):
     proposalId: str
     intent: str
     mode: str
+    workflow: str
     summary: str
     rationale: str
     graphOperations: list[GraphOperationEnvelope]
     touchedNodeIds: list[str] = Field(default_factory=list)
     memoryInsight: str | None = None
+    diff: dict[str, Any] = Field(default_factory=dict)
+    status: str = "draft"
 
 
 class ChatResponse(BaseModel):
     projectId: str
     intent: str
     mode: str
+    workflow: str
     contextScore: float
+    contextBundle: list[dict[str, Any]]
     needsClarification: bool
     clarificationQuestion: str | None = None
     response: str
     graphContext: dict[str, Any]
     memoryContext: list[dict[str, Any]]
+    notionContext: list[dict[str, Any]]
     proposal: ProposalPayload | None = None
 
 
@@ -79,47 +114,13 @@ class ApplyProposalResponse(BaseModel):
     projectId: str
     project: dict[str, Any]
     appliedAt: str
+    proposal: ProposalPayload
+    memoryPolicy: dict[str, Any]
 
 
-class StoredProposal(BaseModel):
-    proposalId: str
+class ConsolidateMemoryResponse(BaseModel):
     projectId: str
-    summary: str
-    graphOperations: list[GraphOperationEnvelope]
-    touchedNodeIds: list[str] = Field(default_factory=list)
-    memoryInsight: str | None = None
-    createdAt: str
-
-
-class WorkflowGraphResponse(BaseModel):
-    projectId: str
-    project: dict[str, Any]
-
-
-class WorkflowContextResponse(BaseModel):
-    projectId: str
-    project: dict[str, Any]
-    graphVersion: int
-    uiContext: dict[str, Any]
-    graphContext: dict[str, Any]
-
-
-class AgentState(TypedDict):
-    project_id: str
-    user_input: str
-    ui_context: dict[str, Any]
-    request_settings: dict[str, str | None]
-    intent: NotRequired[str]
-    mode: NotRequired[str]
-    project_snapshot: NotRequired[dict[str, Any]]
-    graph_context: NotRequired[dict[str, Any]]
-    workflow_context: NotRequired[dict[str, Any]]
-    memory_context: NotRequired[list[dict[str, Any]]]
-    context_score: NotRequired[float]
-    needs_clarification: NotRequired[bool]
-    clarification: NotRequired[str | None]
-    proposal: NotRequired[dict[str, Any] | None]
-    response: NotRequired[str]
+    summary: dict[str, Any]
 
 
 def utc_now() -> str:
@@ -130,93 +131,71 @@ def uid(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex[:8]}"
 
 
-def infer_intent_and_mode(message: str) -> tuple[str, str]:
+def infer_intent_mode_workflow(message: str) -> tuple[str, str, str]:
     normalized = message.strip().lower()
+    if any(keyword in normalized for keyword in ["reflect", "reflection", "architecture", "bottleneck"]):
+        return "reflect", "analyze", "reflection"
+    if any(keyword in normalized for keyword in ["knowledge", "docs", "document", "notion", "notes"]):
+        return "knowledge_lookup", "knowledge", "knowledge"
+    if any(keyword in normalized for keyword in ["memory", "remember", "consolidate"]):
+        return "memory_action", "memory", "memory"
     if any(keyword in normalized for keyword in ["plan", "break down", "create", "add", "tasks", "subtasks", "decompose"]):
-        return "create_tasks", "plan"
+        return "create_tasks", "plan", "planning"
     if any(keyword in normalized for keyword in ["rename", "change", "update", "edit", "revise"]):
-        return "update_task", "update"
+        return "update_task", "update", "planning"
     if any(keyword in normalized for keyword in ["what", "show", "status", "blocked", "available", "next"]):
-        return "query_state", "query"
-    return "discuss", "chat"
+        return "query_state", "query", "planning"
+    return "discuss", "chat", "planning"
 
 
-def summarize_memory_items(memory_items: list[dict[str, Any]]) -> str:
-    if not memory_items:
-        return ""
-    return "\n".join(f"- {item.get('summary', item.get('content', ''))}" for item in memory_items[:6] if item.get("summary") or item.get("content"))
+def llm_client(api_key_override: str | None = None) -> OpenAI | None:
+    api_key = api_key_override or OPENAI_API_KEY
+    if not api_key:
+        return None
+    return OpenAI(api_key=api_key)
 
 
-def validate_snapshot(snapshot: dict[str, Any]) -> None:
-    nodes = snapshot.get("nodes", [])
-    edges = snapshot.get("edges", [])
-    node_ids = {node["id"] for node in nodes}
-    if len(node_ids) != len(nodes):
-        raise HTTPException(status_code=400, detail="AI proposal produced duplicate node IDs.")
+def maybe_polish_response(
+    workflow: str,
+    message: str,
+    graph_context: dict[str, Any],
+    context_bundle: list[dict[str, Any]],
+    draft_response: str,
+    openai_api_key: str | None = None,
+) -> str:
+    client = llm_client(openai_api_key)
+    if client is None:
+        return draft_response
 
-    edge_ids = {edge["id"] for edge in edges}
-    if len(edge_ids) != len(edges):
-        raise HTTPException(status_code=400, detail="AI proposal produced duplicate edge IDs.")
-
-    def same_scope(source_id: str, target_id: str) -> bool:
-        source = next((node for node in nodes if node["id"] == source_id), None)
-        target = next((node for node in nodes if node["id"] == target_id), None)
-        if not source or not target:
-            return False
-        return source.get("parentId") == target.get("parentId")
-
-    for node in nodes:
-        parent_id = node.get("parentId")
-        if parent_id and parent_id not in node_ids:
-            raise HTTPException(status_code=400, detail=f"AI proposal references missing parent node {parent_id}.")
-
-    adjacency: dict[str, list[str]] = {}
-    seen_pairs: set[tuple[str, str]] = set()
-    for edge in edges:
-        source = edge["source"]
-        target = edge["target"]
-        if source not in node_ids or target not in node_ids:
-            raise HTTPException(status_code=400, detail="AI proposal created an edge to a missing node.")
-        if source == target:
-            raise HTTPException(status_code=400, detail="AI proposal created a self-referential dependency.")
-        if not same_scope(source, target):
-            raise HTTPException(status_code=400, detail="AI proposal created a cross-scope dependency.")
-        pair = (source, target)
-        if pair in seen_pairs:
-            raise HTTPException(status_code=400, detail="AI proposal created a duplicate dependency.")
-        seen_pairs.add(pair)
-        adjacency.setdefault(source, []).append(target)
-
-    visiting: set[str] = set()
-    visited: set[str] = set()
-
-    def visit(node_id: str) -> None:
-        if node_id in visited:
-            return
-        if node_id in visiting:
-            raise HTTPException(status_code=400, detail="AI proposal created a dependency cycle.")
-        visiting.add(node_id)
-        for next_id in adjacency.get(node_id, []):
-            visit(next_id)
-        visiting.remove(node_id)
-        visited.add(node_id)
-
-    for node_id in node_ids:
-        visit(node_id)
-
-
-def title_from_message(message: str) -> str:
-    cleaned = re.sub(r"\s+", " ", message.strip())
-    cleaned = re.sub(r"^(please|can you|could you|help me)\s+", "", cleaned, flags=re.IGNORECASE)
-    return cleaned[:60].strip() or "New workstream"
+    system_prompt = (
+        "You are a concise project planning assistant inside a graph workflow tool. "
+        "Respond clearly, stay grounded in the provided context, and mention when a proposal is waiting for approval."
+    )
+    user_prompt = json.dumps(
+        {
+            "workflow": workflow,
+            "message": message,
+            "graph_summary": graph_context.get("summaries", {}),
+            "context_bundle": context_bundle[:5],
+            "draft_response": draft_response,
+        }
+    )
+    try:
+        completion = client.responses.create(
+            model=OPENAI_MODEL,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        return completion.output_text.strip() or draft_response
+    except Exception:
+        return draft_response
 
 
 def next_position(nodes: list[dict[str, Any]], parent_id: str | None) -> dict[str, float]:
     siblings = [node for node in nodes if node.get("parentId") == parent_id]
-    return {
-        "x": 90 + (len(siblings) % 4) * 120,
-        "y": 110 + (len(siblings) // 4) * 120,
-    }
+    return {"x": 90 + (len(siblings) % 4) * 120, "y": 110 + (len(siblings) // 4) * 120}
 
 
 def build_task(title: str, parent_id: str | None, nodes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -229,17 +208,16 @@ def build_task(title: str, parent_id: str | None, nodes: list[dict[str, Any]]) -
         "description": "",
         "completionCriteria": "",
         "tags": [],
+        "conceptId": None,
+        "externalRefs": [],
+        "sourceKind": "ai-generated",
         "parentId": parent_id,
     }
 
 
 def create_plan_titles(message: str, anchor_title: str | None) -> list[str]:
-    stem = anchor_title or title_from_message(message)
-    return [
-        f"Research {stem}",
-        f"Define {stem} approach",
-        f"Implement {stem}",
-    ]
+    stem = anchor_title or re.sub(r"\s+", " ", message.strip())[:48] or "workstream"
+    return [f"Research {stem}", f"Define {stem} approach", f"Implement {stem}"]
 
 
 def build_query_response(graph_context: dict[str, Any], ui_context: dict[str, Any]) -> str:
@@ -262,325 +240,171 @@ def build_query_response(graph_context: dict[str, Any], ui_context: dict[str, An
     return " ".join(lines) or "The workflow is loaded and ready, but I need a bit more direction on what you want to inspect."
 
 
-class WorkflowServiceClient:
-    def __init__(self, base_url: str):
-        self.base_url = base_url.rstrip("/")
-
-    async def fetch_context(self, project_id: str, ui_context: dict[str, Any]) -> WorkflowContextResponse:
-        params: list[tuple[str, str]] = [("activeTabId", ui_context.get("activeTabId", "main"))]
-        for node_id in ui_context.get("selectedNodeIds", []):
-            params.append(("selectedNodeIds", node_id))
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.get(f"{self.base_url}/api/projects/{project_id}/context", params=params)
-            response.raise_for_status()
-        return WorkflowContextResponse.model_validate(response.json())
-
-    async def apply_operations(self, project_id: str, operations: list[dict[str, Any]]) -> WorkflowGraphResponse:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post(
-                f"{self.base_url}/api/projects/{project_id}/operations",
-                json={"operations": operations},
-            )
-            response.raise_for_status()
-        return WorkflowGraphResponse.model_validate(response.json())
+def use_client(default_url: str, override: str | None) -> McpClient:
+    return McpClient(override or default_url)
 
 
-class SupermemoryClient:
-    def __init__(self, base_url: str, api_key: str | None):
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-
-    async def query(self, project_id: str, message: str, api_key_override: str | None = None) -> list[dict[str, Any]]:
-        api_key = api_key_override or self.api_key
-        if not api_key:
-            return []
-        payload = {
-            "query": message,
-            "filters": {"projectId": project_id},
-            "limit": 6,
-        }
-        headers = {"Authorization": f"Bearer {api_key}"}
-        try:
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                response = await client.post(f"{self.base_url}/v1/memories/search", json=payload, headers=headers)
-                response.raise_for_status()
-            data = response.json()
-        except Exception:
-            return []
-        items = data.get("memories") or data.get("results") or []
-        return [item for item in items if isinstance(item, dict)]
-
-    async def store(self, project_id: str, summary: str, touched_node_ids: list[str], api_key_override: str | None = None) -> None:
-        api_key = api_key_override or self.api_key
-        if not api_key or not summary.strip():
-            return
-        payload = {
-            "content": summary,
-            "metadata": {
-                "projectId": project_id,
-                "touchedNodeIds": touched_node_ids,
-                "kind": "project_planner_insight",
-            },
-        }
-        headers = {"Authorization": f"Bearer {api_key}"}
-        try:
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                response = await client.post(f"{self.base_url}/v1/memories", json=payload, headers=headers)
-                response.raise_for_status()
-        except Exception:
-            return
-
-
-def llm_client(api_key_override: str | None = None) -> OpenAI | None:
-    api_key = api_key_override or OPENAI_API_KEY
-    if not api_key:
-        return None
-    return OpenAI(api_key=api_key)
-
-
-def maybe_polish_response(
-    intent: str,
-    message: str,
-    graph_context: dict[str, Any],
-    memory_context: list[dict[str, Any]],
-    draft_response: str,
-    openai_api_key: str | None = None,
-) -> str:
-    client = llm_client(openai_api_key)
-    if client is None:
-        return draft_response
-
-    system_prompt = (
-        "You are a concise project planning assistant inside a node-graph workflow tool. "
-        "Summarize the result clearly, mention if a proposal was drafted, and avoid inventing facts."
-    )
-    user_prompt = json.dumps(
+async def fetch_graph_context(project_id: str, ui_context: dict[str, Any], settings: AiRequestSettings) -> dict[str, Any]:
+    client = use_client(TASK_GRAPH_MCP_URL, settings.taskGraphMcpUrl)
+    return await client.call_tool(
+        "get_project_context",
         {
-            "intent": intent,
-            "message": message,
-            "graph_summary": graph_context.get("summaries", {}),
-            "memory_context": memory_context[:4],
-            "draft_response": draft_response,
-        }
+            "projectId": project_id,
+            "activeTabId": ui_context.get("activeTabId", "main"),
+            "selectedNodeIds": ui_context.get("selectedNodeIds", []),
+        },
     )
-    try:
-        completion = client.responses.create(
-            model=OPENAI_MODEL,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        return completion.output_text.strip() or draft_response
-    except Exception:
-        return draft_response
 
 
-def detect_intent_node(state: AgentState) -> AgentState:
-    intent, mode = infer_intent_and_mode(state["user_input"])
-    state["intent"] = intent
-    state["mode"] = mode
-    return state
+async def fetch_memory_context(project_id: str, message: str, graph_context: dict[str, Any], settings: AiRequestSettings) -> list[dict[str, Any]]:
+    client = use_client(SUPERMEMORY_MCP_URL, settings.supermemoryMcpUrl)
+    memory_scope = graph_context.get("graphContext", {}).get("root", {}).get("memoryScope", {})
+    result = await client.call_tool(
+        "search_memories",
+        {
+            "apiKey": settings.supermemoryApiKey,
+            "query": message,
+            "containerTags": memory_scope.get("containerTags", []),
+            "filters": memory_scope.get("metadataDefaults", {}),
+            "limit": memory_scope.get("retrievalDefaults", {}).get("limit", 6),
+        },
+    )
+    items = result.get("memories") or result.get("results") or []
+    return [item for item in items if isinstance(item, dict)]
 
 
-async def resolve_graph_context_node(state: AgentState) -> AgentState:
-    workflow_client: WorkflowServiceClient = app.state.workflow_client
-    context = await workflow_client.fetch_context(state["project_id"], state["ui_context"])
-    state["project_snapshot"] = context.project
-    state["graph_context"] = context.graphContext
-    state["workflow_context"] = context.model_dump()
-    return state
+async def fetch_notion_context(message: str, settings: AiRequestSettings) -> list[dict[str, Any]]:
+    if not settings.notionApiKey:
+        return []
+    client = use_client(NOTION_MCP_URL, settings.notionMcpUrl)
+    result = await client.call_tool("search_pages", {"apiKey": settings.notionApiKey, "query": message})
+    items = result.get("results") or []
+    return [item for item in items if isinstance(item, dict)]
 
 
-async def retrieve_memory_node(state: AgentState) -> AgentState:
-    memory_client: SupermemoryClient = app.state.memory_client
-    settings = state.get("request_settings", {})
-    supermemory_api_key = settings.get("supermemoryApiKey") if isinstance(settings, dict) else None
-    state["memory_context"] = await memory_client.query(state["project_id"], state["user_input"], supermemory_api_key)
-    return state
+async def persist_proposal(project_id: str, proposal: dict[str, Any], settings: AiRequestSettings) -> dict[str, Any]:
+    client = use_client(TASK_GRAPH_MCP_URL, settings.taskGraphMcpUrl)
+    return await client.call_tool("create_proposal", {"payload": {"projectId": project_id, **proposal}})
 
 
-def assess_context_node(state: AgentState) -> AgentState:
-    graph_context = state["graph_context"]
-    root_workstreams = graph_context.get("summaries", {}).get("rootWorkstreams", [])
-    selected = state["ui_context"].get("selectedNodeIds", [])
-    message = state["user_input"].strip()
-    score = 0.35
-    if root_workstreams:
-        score += 0.2
-    if selected:
-        score += 0.2
-    if state.get("memory_context"):
-        score += 0.1
-    if len(message.split()) >= 6:
-        score += 0.15
-    if graph_context.get("root", {}).get("description", "").strip():
-        score += 0.1
-    score = max(0.0, min(1.0, score))
-
-    needs_clarification = False
-    clarification: str | None = None
-    if state["intent"] in {"create_tasks", "update_task"} and score < 0.5:
-        needs_clarification = True
-        clarification = "What is the one concrete outcome or deliverable you want this part of the graph to achieve?"
-    elif state["intent"] == "update_task" and not selected:
-        needs_clarification = True
-        clarification = "Which node should I update? Select a node or mention its title."
-
-    state["context_score"] = score
-    state["needs_clarification"] = needs_clarification
-    state["clarification"] = clarification
-    return state
+async def apply_stored_proposal(proposal_id: str, actor: str | None, settings: AiRequestSettings) -> dict[str, Any]:
+    client = use_client(TASK_GRAPH_MCP_URL, settings.taskGraphMcpUrl)
+    return await client.call_tool("apply_proposal", {"proposalId": proposal_id, "actor": actor})
 
 
-def build_replace_graph_operation(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    validate_snapshot(snapshot)
-    return [{"type": "replace_graph", "project": snapshot}]
-
-
-def generate_proposal_node(state: AgentState) -> AgentState:
-    snapshot = json.loads(json.dumps(state["project_snapshot"]))
-    graph_context = state["graph_context"]
-    ui_context = state["ui_context"]
+def build_planning_proposal(
+    intent: str,
+    workflow_context: dict[str, Any],
+    ui_context: dict[str, Any],
+    message: str,
+    context_score: float,
+) -> tuple[dict[str, Any] | None, str, bool, str | None]:
+    graph_context = workflow_context["graphContext"]
+    snapshot = workflow_context["project"]
     selected_nodes = {node["id"]: node for node in graph_context.get("nodeInventory", []) if node["id"] in ui_context.get("selectedNodeIds", [])}
     selected_group = next((node for node in selected_nodes.values() if node["kind"] == "group"), None)
     selected_task = next((node for node in selected_nodes.values() if node["kind"] == "task"), None)
-    proposal: dict[str, Any] | None = None
 
-    if state["intent"] == "query_state":
-        state["response"] = build_query_response(graph_context, state["workflow_context"]["uiContext"])
-        state["proposal"] = None
-        return state
+    needs_clarification = False
+    clarification: str | None = None
+    if intent in {"create_tasks", "update_task"} and context_score < MIN_PLANNING_SCORE:
+        needs_clarification = True
+        clarification = "What is the one concrete outcome or deliverable you want this part of the graph to achieve?"
+    elif intent == "update_task" and not selected_nodes:
+        needs_clarification = True
+        clarification = "Which node should I update? Select a node or mention its title."
 
-    if state["intent"] == "create_tasks":
-        parent_id = selected_group["id"] if selected_group else None
+    if intent == "query_state":
+        return None, build_query_response(graph_context, workflow_context["uiContext"]), needs_clarification, clarification
+
+    if intent == "create_tasks":
+        parent_id = selected_group["id"] if selected_group else selected_task.get("parentId") if selected_task else None
         anchor_title = selected_group["title"] if selected_group else selected_task["title"] if selected_task else None
-        titles = create_plan_titles(state["user_input"], anchor_title)
+        titles = create_plan_titles(message, anchor_title)[:MAX_PROPOSAL_TASKS]
         created_tasks: list[dict[str, Any]] = []
         for title in titles:
             task = build_task(title, parent_id, snapshot["nodes"])
             snapshot["nodes"].append(task)
             created_tasks.append(task)
         created_edges: list[dict[str, Any]] = []
-
         if selected_task:
             for task in created_tasks:
                 created_edges.append({"id": uid("edge"), "source": task["id"], "target": selected_task["id"]})
         else:
-            for index in range(len(created_tasks) - 1):
+            for index in range(min(len(created_tasks) - 1, MAX_PROPOSAL_EDGES)):
                 created_edges.append({"id": uid("edge"), "source": created_tasks[index]["id"], "target": created_tasks[index + 1]["id"]})
 
-        snapshot["edges"].extend(created_edges)
-        operations = build_replace_graph_operation(snapshot)
+        operations: list[dict[str, Any]] = [{"type": "create_tasks", "tasks": created_tasks}]
+        if created_edges:
+            operations.append({"type": "create_edges", "edges": created_edges})
         touched_node_ids = [task["id"] for task in created_tasks]
         if selected_task:
             touched_node_ids.append(selected_task["id"])
         proposal = {
             "proposalId": uid("proposal"),
-            "intent": state["intent"],
-            "mode": state["mode"],
+            "intent": intent,
+            "mode": "plan",
+            "workflow": "planning",
             "summary": f"Drafted {len(created_tasks)} tasks for {anchor_title or graph_context['root']['title']}.",
-            "rationale": "I used the current graph scope, selected focus, and existing dependency rules to create a reviewable draft rather than mutating the graph immediately.",
+            "rationale": "I used the current graph scope, selected focus, and graph validation rules to create a reviewable operation bundle.",
             "graphOperations": operations,
             "touchedNodeIds": touched_node_ids,
-            "memoryInsight": f"User prefers iterative planning around {anchor_title or graph_context['root']['title']} with review-before-apply proposals.",
+            "memoryInsight": f"Planning draft created around {anchor_title or graph_context['root']['title']}.",
         }
         response = proposal["summary"]
-        if state.get("needs_clarification") and state.get("clarification"):
-            response = f"{response} Before you apply it, {state['clarification']}"
-        state["proposal"] = proposal
-        state["response"] = response
-        return state
+        if needs_clarification and clarification:
+            response = f"{response} Before you apply it, {clarification}"
+        return proposal, response, needs_clarification, clarification
 
-    if state["intent"] == "update_task":
+    if intent == "update_task":
         target = selected_group or selected_task
         if target:
-            target_snapshot = next((node for node in snapshot["nodes"] if node["id"] == target["id"]), None)
-            if target_snapshot is not None:
-                rename_match = re.search(r"(?:rename|change).+?to ['\"]?([^'\"]+)['\"]?$", state["user_input"], flags=re.IGNORECASE)
-                if rename_match:
-                    target_snapshot["title"] = rename_match.group(1).strip()
-                    summary = f"Drafted a rename for {target['title']}."
-                else:
-                    target_snapshot["description"] = state["user_input"].strip()
-                    summary = f"Drafted a description update for {target['title']}."
-                operations = build_replace_graph_operation(snapshot)
-                proposal = {
-                    "proposalId": uid("proposal"),
-                    "intent": state["intent"],
-                    "mode": state["mode"],
-                    "summary": summary,
-                    "rationale": "The update is packaged as a reviewable graph replacement so the workflow backend still validates the result before it becomes source of truth.",
-                    "graphOperations": operations,
-                    "touchedNodeIds": [target["id"]],
-                    "memoryInsight": f"Decision recorded for {target_snapshot['title']}: {summary}",
-                }
-                state["proposal"] = proposal
-                state["response"] = summary
-                return state
+            rename_match = re.search(r"(?:rename|change).+?to ['\"]?([^'\"]+)['\"]?$", message, flags=re.IGNORECASE)
+            fields: dict[str, Any]
+            if rename_match:
+                fields = {"title": rename_match.group(1).strip()}
+                summary = f"Drafted a rename for {target['title']}."
+            else:
+                fields = {"description": message.strip()}
+                summary = f"Drafted a description update for {target['title']}."
+            proposal = {
+                "proposalId": uid("proposal"),
+                "intent": intent,
+                "mode": "update",
+                "workflow": "planning",
+                "summary": summary,
+                "rationale": "The update is packaged as a small graph operation so it stays reviewable and backend-validated.",
+                "graphOperations": [{"type": "update_node_fields", "targetType": "node", "targetId": target["id"], "fields": fields}],
+                "touchedNodeIds": [target["id"]],
+                "memoryInsight": f"Decision recorded for {target['title']}: {summary}",
+            }
+            return proposal, summary, needs_clarification, clarification
 
-    state["proposal"] = None
-    draft = (
-        "I reviewed the graph, the current scope, and any retrieved memory. "
-        "I can help refine structure, explain blockers, or draft a proposal once you point me at a specific workstream."
-    )
-    state["response"] = draft
-    return state
+    return None, "I reviewed the graph and context. I can help refine structure, explain blockers, or draft a proposal once you point me at a specific workstream.", needs_clarification, clarification
 
 
-def validate_proposal_node(state: AgentState) -> AgentState:
-    proposal = state.get("proposal")
-    if proposal:
-        for operation in proposal.get("graphOperations", []):
-            if operation["type"] == "replace_graph":
-                validate_snapshot(operation["project"])
-    return state
-
-
-def respond_node(state: AgentState) -> AgentState:
-    settings = state.get("request_settings", {})
-    openai_api_key = settings.get("openaiApiKey") if isinstance(settings, dict) else None
-    state["response"] = maybe_polish_response(
-        state["intent"],
-        state["user_input"],
-        state["graph_context"],
-        state.get("memory_context", []),
-        state["response"],
-        openai_api_key,
-    )
-    return state
-
-
-def build_agent_graph():
-    graph = StateGraph(AgentState)
-    graph.add_node("detect_intent", detect_intent_node)
-    graph.add_node("resolve_graph_context", resolve_graph_context_node)
-    graph.add_node("retrieve_memory", retrieve_memory_node)
-    graph.add_node("assess_context", assess_context_node)
-    graph.add_node("generate_proposal", generate_proposal_node)
-    graph.add_node("validate_proposal", validate_proposal_node)
-    graph.add_node("respond", respond_node)
-    graph.set_entry_point("detect_intent")
-    graph.add_edge("detect_intent", "resolve_graph_context")
-    graph.add_edge("resolve_graph_context", "retrieve_memory")
-    graph.add_edge("retrieve_memory", "assess_context")
-    graph.add_edge("assess_context", "generate_proposal")
-    graph.add_edge("generate_proposal", "validate_proposal")
-    graph.add_edge("validate_proposal", "respond")
-    graph.add_edge("respond", END)
-    return graph.compile()
+def build_reflection_response(context_bundle: list[dict[str, Any]], graph_context: dict[str, Any]) -> str:
+    critical = graph_context.get("summaries", {}).get("criticalPathCandidates", [])
+    empty_groups = graph_context.get("summaries", {}).get("emptyGroups", [])
+    missing = graph_context.get("summaries", {}).get("itemsMissingDetails", [])
+    parts = ["Reflection mode is active."]
+    if critical:
+        parts.append(f"The graph currently concentrates risk around {critical[0]['title']}.")
+    if empty_groups:
+        parts.append(f"There are {len(empty_groups)} empty groups that may indicate unresolved decomposition.")
+    if missing:
+        parts.append(f"{len(missing)} items still lack description or completion criteria.")
+    if any(item["source"] == "notion" for item in context_bundle):
+        parts.append("Notion knowledge was included in this reflection.")
+    return " ".join(parts)
 
 
 @asynccontextmanager
-async def lifespan(app_instance: FastAPI):
-    app_instance.state.workflow_client = WorkflowServiceClient(WORKFLOW_SERVICE_URL)
-    app_instance.state.memory_client = SupermemoryClient(SUPERMEMORY_API_URL, SUPERMEMORY_API_KEY)
-    app_instance.state.agent_graph = build_agent_graph()
-    app_instance.state.proposals: dict[str, StoredProposal] = {}
+async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Project Planner AI Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Project Planner AI Service", version="0.2.0", lifespan=lifespan)
 
 
 @app.get("/api/health")
@@ -590,74 +414,154 @@ async def health():
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(payload: ChatRequest):
+    settings = payload.settings or AiRequestSettings()
+    intent, mode, workflow = infer_intent_mode_workflow(payload.message)
+
     try:
-        result = await app.state.agent_graph.ainvoke(
-            {
-                "project_id": payload.projectId,
-                "user_input": payload.message,
-                "ui_context": payload.uiContext.model_dump(),
-                "request_settings": payload.settings or {},
-            }
-        )
+        workflow_context = await fetch_graph_context(payload.projectId, payload.uiContext.model_dump(), settings)
+        memory_context = await fetch_memory_context(payload.projectId, payload.message, workflow_context, settings)
+        notion_context = await fetch_notion_context(payload.message, settings) if workflow in {"knowledge", "reflection"} else []
     except httpx.HTTPStatusError as error:
         detail = error.response.text if error.response is not None else "Could not resolve workflow context."
         raise HTTPException(status_code=502, detail=detail) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
-    proposal_payload = result.get("proposal")
-    proposal_model = ProposalPayload.model_validate(proposal_payload) if proposal_payload else None
-    if proposal_model is not None:
-        app.state.proposals[proposal_model.proposalId] = StoredProposal(
-            proposalId=proposal_model.proposalId,
-            projectId=payload.projectId,
-            summary=proposal_model.summary,
-            graphOperations=proposal_model.graphOperations,
-            touchedNodeIds=proposal_model.touchedNodeIds,
-            memoryInsight=proposal_model.memoryInsight,
-            createdAt=utc_now(),
+    context_bundle = assemble_context_bundle(workflow_context, memory_context, notion_context, workflow)
+    context_score = score_context_bundle(
+        workflow_context["graphContext"],
+        memory_context,
+        notion_context,
+        payload.uiContext.selectedNodeIds,
+        payload.message,
+    )
+
+    proposal_payload: dict[str, Any] | None = None
+    needs_clarification = False
+    clarification: str | None = None
+    if workflow == "reflection":
+        response = build_reflection_response(context_bundle, workflow_context["graphContext"])
+    elif workflow == "knowledge":
+        response = "Knowledge workflow is active. I searched project graph context and any connected Notion knowledge sources to ground the response."
+    elif workflow == "memory":
+        response = "Memory workflow is active. I can consolidate project memory from the UI when you ask me to run consolidation."
+    else:
+        proposal_payload, response, needs_clarification, clarification = build_planning_proposal(
+            intent,
+            workflow_context,
+            payload.uiContext.model_dump(),
+            payload.message,
+            context_score,
         )
+
+    persisted_proposal: ProposalPayload | None = None
+    if proposal_payload is not None:
+        stored = await persist_proposal(payload.projectId, proposal_payload, settings)
+        persisted_proposal = ProposalPayload.model_validate(stored)
+
+    response = maybe_polish_response(
+        workflow,
+        payload.message,
+        workflow_context["graphContext"],
+        context_bundle,
+        response,
+        settings.openaiApiKey,
+    )
 
     return ChatResponse(
         projectId=payload.projectId,
-        intent=result["intent"],
-        mode=result["mode"],
-        contextScore=result["context_score"],
-        needsClarification=result["needs_clarification"],
-        clarificationQuestion=result.get("clarification"),
-        response=result["response"],
-        graphContext=result["graph_context"],
-        memoryContext=result.get("memory_context", []),
-        proposal=proposal_model,
+        intent=intent,
+        mode=mode,
+        workflow=workflow,
+        contextScore=context_score,
+        contextBundle=context_bundle,
+        needsClarification=needs_clarification,
+        clarificationQuestion=clarification,
+        response=response,
+        graphContext=workflow_context["graphContext"],
+        memoryContext=memory_context,
+        notionContext=notion_context,
+        proposal=persisted_proposal,
     )
 
 
 @app.post("/api/chat/proposals/{proposal_id}/apply", response_model=ApplyProposalResponse)
 async def apply_proposal(proposal_id: str, payload: ApplyProposalRequest):
-    stored_proposal = app.state.proposals.get(proposal_id)
-    if not stored_proposal:
-        raise HTTPException(status_code=404, detail="Proposal not found or expired.")
-
-    workflow_client: WorkflowServiceClient = app.state.workflow_client
-    memory_client: SupermemoryClient = app.state.memory_client
+    settings = payload.settings or AiRequestSettings()
     try:
-        response = await workflow_client.apply_operations(
-            stored_proposal.projectId,
-            [operation.model_dump(exclude_none=True) for operation in stored_proposal.graphOperations],
-        )
+        applied = await apply_stored_proposal(proposal_id, payload.actor, settings)
     except httpx.HTTPStatusError as error:
         detail = error.response.text if error.response is not None else "Could not apply proposal."
         raise HTTPException(status_code=502, detail=detail) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
-    await memory_client.store(
-        stored_proposal.projectId,
-        stored_proposal.memoryInsight or stored_proposal.summary,
-        stored_proposal.touchedNodeIds,
-        (payload.settings or {}).get("supermemoryApiKey"),
-    )
-    del app.state.proposals[proposal_id]
+    proposal = ProposalPayload.model_validate(applied["proposal"])
+    policy = classify_memory(proposal.workflow, proposal.intent, "applied", proposal.memoryInsight or proposal.summary)
+    if policy["shouldStore"]:
+        client = use_client(SUPERMEMORY_MCP_URL, settings.supermemoryMcpUrl)
+        graph_root = applied["project"]["root"]
+        memory_scope = graph_root.get("memoryScope", {})
+        metadata = {
+            "projectId": applied["projectId"],
+            "category": policy["category"],
+            "confidence": policy["confidence"],
+            "touchedNodeIds": proposal.touchedNodeIds,
+            "conceptIds": [graph_root.get("conceptId"), *[node.get("conceptId") for node in applied["project"].get("nodes", []) if node.get("id") in proposal.touchedNodeIds and node.get("conceptId")]],
+        }
+        await client.call_tool(
+            "store_memory",
+            {
+                "apiKey": settings.supermemoryApiKey,
+                "content": proposal.memoryInsight or proposal.summary,
+                "containerTags": memory_scope.get("containerTags", []),
+                "metadata": metadata,
+            },
+        )
 
     return ApplyProposalResponse(
         proposalId=proposal_id,
-        projectId=response.projectId,
-        project=response.project,
+        projectId=applied["projectId"],
+        project=applied["project"],
         appliedAt=utc_now(),
+        proposal=proposal,
+        memoryPolicy=policy,
     )
+
+
+@app.post("/api/memory/consolidate", response_model=ConsolidateMemoryResponse)
+async def consolidate_memory(payload: ConsolidateMemoryRequest):
+    settings = payload.settings or AiRequestSettings()
+    try:
+        workflow_context = await fetch_graph_context(payload.projectId, {"activeTabId": "main", "selectedNodeIds": []}, settings)
+        client = use_client(SUPERMEMORY_MCP_URL, settings.supermemoryMcpUrl)
+        memory_scope = workflow_context["graphContext"]["root"].get("memoryScope", {})
+        summary = await client.call_tool(
+            "consolidate_project_memories",
+            {
+                "apiKey": settings.supermemoryApiKey,
+                "projectId": payload.projectId,
+                "containerTags": memory_scope.get("containerTags", []),
+                "filters": memory_scope.get("metadataDefaults", {}),
+            },
+        )
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return ConsolidateMemoryResponse(projectId=payload.projectId, summary=summary)
+
+
+@app.post("/api/notion/writeback")
+async def notion_writeback(payload: NotionWritebackRequest):
+    settings = payload.settings or AiRequestSettings()
+    client = use_client(NOTION_MCP_URL, settings.notionMcpUrl)
+    try:
+        if payload.action == "create_page":
+            result = await client.call_tool("create_page", {"apiKey": settings.notionApiKey, "payload": payload.payload})
+        else:
+            result = await client.call_tool(
+                "append_block_children",
+                {"apiKey": settings.notionApiKey, "blockId": payload.blockId, "payload": payload.payload},
+            )
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return {"status": "ok", "result": result}

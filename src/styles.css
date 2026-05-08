@@ -555,6 +555,13 @@
     pointer-events: auto;
   }
 
+  .floating-ai-panel--dock {
+    @apply left-1/2 bottom-6 z-30;
+    transform: translateX(-50%);
+    width: min(44rem, calc(100vw - 2rem));
+    max-width: calc(100vw - 2rem);
+  }
+
   .floating-properties-panel--resizable {
     max-width: calc(100% - 3rem);
   }
@@ -587,6 +594,27 @@
     max-height: calc(100vh - 13rem);
   }
 
+  .ai-panel-shell--dock {
+    @apply flex flex-col gap-3 p-3;
+    max-height: calc(100vh - 1.5rem);
+    min-height: 4.75rem;
+    height: 4.75rem;
+    overflow: hidden;
+    background: rgba(10, 11, 15, 0.82);
+    backdrop-filter: blur(18px);
+    box-shadow:
+      inset 0 0 0 1px rgba(225, 195, 255, 0.12),
+      0 24px 60px -26px rgba(0, 0, 0, 0.72);
+    transition:
+      height 180ms ease,
+      box-shadow 180ms ease,
+      background 180ms ease;
+  }
+
+  .ai-panel-shell--dock.is-expanded {
+    height: calc(100vh - 2rem);
+  }
+
   .ai-dialog-panel {
     @apply min-h-0 w-full;
     height: 100%;
@@ -605,6 +633,19 @@
 
   .ai-panel-scroll {
     max-height: 20rem;
+  }
+
+  .ai-panel-scroll--dock {
+    max-height: none;
+    min-height: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms ease;
+  }
+
+  .ai-panel-shell--dock.is-expanded .ai-panel-scroll--dock {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .ai-dialog-panel__scroll {
@@ -895,6 +936,12 @@
     @apply bg-surface-high;
   }
 
+  .ai-message--action,
+  .ai-message--error,
+  .ai-message--pending {
+    @apply gap-2;
+  }
+
   .ai-message__role {
     @apply text-primary;
   }
@@ -907,6 +954,42 @@
   .ai-composer {
     @apply flex flex-col gap-4 bg-surface-high px-4 py-4;
     border-radius: var(--radius-architectural);
+  }
+
+  .ai-composer--dock {
+    @apply gap-3 bg-transparent p-0;
+    border-radius: 0;
+    margin-top: auto;
+  }
+
+  .ai-composer__field {
+    @apply gap-0;
+  }
+
+  .ai-composer--dock textarea {
+    min-height: 3.25rem;
+    max-height: 15rem;
+    resize: none;
+    overflow-y: auto;
+    font-size: 0.98rem;
+    line-height: 1.45;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .ai-composer--dock .ai-composer__actions {
+    @apply justify-end;
+  }
+
+  @media (max-width: 900px) {
+    .floating-ai-panel--dock {
+      width: calc(100vw - 1rem);
+      max-width: calc(100vw - 1rem);
+      bottom: 0.5rem;
+    }
+
+    .ai-panel-shell--dock.is-expanded {
+      height: calc(100vh - 1rem);
+    }
   }
 
   .properties-panel__footer {

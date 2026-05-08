@@ -10,6 +10,12 @@ services:
         condition: service_healthy
       ai-service:
         condition: service_healthy
+      task-graph-mcp:
+        condition: service_healthy
+      supermemory-mcp:
+        condition: service_healthy
+      notion-mcp:
+        condition: service_healthy
     restart: unless-stopped
   postgres:
     image: postgres:17-alpine
@@ -56,15 +62,15 @@ services:
       context: ./ai_service
       dockerfile: Dockerfile
     environment:
-      WORKFLOW_SERVICE_URL: http://workflow-service:8000
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4}
-      SUPERMEMORY_API_URL: ${SUPERMEMORY_API_URL:-https://api.supermemory.ai}
-      SUPERMEMORY_API_KEY: ${SUPERMEMORY_API_KEY:-}
+      TASK_GRAPH_MCP_URL: http://task-graph-mcp:8010/mcp
+      SUPERMEMORY_MCP_URL: http://supermemory-mcp:8011/mcp
+      NOTION_MCP_URL: http://notion-mcp:8012/mcp
     ports:
       - "8001:8001"
     depends_on:
-      workflow-service:
+      task-graph-mcp:
         condition: service_healthy
     healthcheck:
       test:
@@ -79,6 +85,111 @@ services:
       retries: 20
       start_period: 5s
     restart: unless-stopped
+  task-graph-mcp:
+    build:
+      context: ./task_graph_mcp
+      dockerfile: Dockerfile
+    environment:
+      WORKFLOW_SERVICE_URL: http://workflow-service:8000
+    depends_on:
+      workflow-service:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=2).read()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+  supermemory-mcp:
+    build:
+      context: ./supermemory_mcp
+      dockerfile: Dockerfile
+    environment:
+      SUPERMEMORY_API_URL: ${SUPERMEMORY_API_URL:-https://api.supermemory.ai}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8011/health', timeout=2).read()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+  notion-mcp:
+    build:
+      context: ./notion_mcp
+      dockerfile: Dockerfile
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8012/health', timeout=2).read()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+  workflow-service-test:
+    profiles: ["test"]
+    build:
+      context: ./workflow_service
+      dockerfile: Dockerfile
+    command: ["pytest", "-q"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://projectplanner:projectplanner@postgres:5432/projectplanner
+    depends_on:
+      postgres:
+        condition: service_healthy
+  ai-service-test:
+    profiles: ["test"]
+    build:
+      context: ./ai_service
+      dockerfile: Dockerfile
+    command: ["pytest", "-q"]
+    environment:
+      TASK_GRAPH_MCP_URL: http://task-graph-mcp:8010/mcp
+      SUPERMEMORY_MCP_URL: http://supermemory-mcp:8011/mcp
+      NOTION_MCP_URL: http://notion-mcp:8012/mcp
+    depends_on:
+      task-graph-mcp:
+        condition: service_healthy
+      supermemory-mcp:
+        condition: service_healthy
+      notion-mcp:
+        condition: service_healthy
+  project-planner-test:
+    profiles: ["test"]
+    image: node:20-alpine
+    working_dir: /app
+    command: ["sh", "-lc", "npm install && npm run test"]
+    volumes:
+      - .:/app
+  e2e-test:
+    profiles: ["test"]
+    image: mcr.microsoft.com/playwright:v1.59.1-jammy
+    working_dir: /app
+    command: ["sh", "-lc", "npm install && npm run test:e2e"]
+    environment:
+      PLAYWRIGHT_BASE_URL: http://project-planner
+    volumes:
+      - .:/app
+    depends_on:
+      project-planner:
+        condition: service_started
 
 volumes:
   postgres-data:

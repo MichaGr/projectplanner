@@ -20,6 +20,8 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   ApiError,
+  ExternalRef,
+  MemoryScope,
   applyProjectGraphOperations,
   checkWorkflowService,
   createProjectGraph,
@@ -53,6 +55,9 @@ type PlannerNodeRecord = {
   description: string;
   completionCriteria: string;
   tags: string[];
+  conceptId?: string | null;
+  externalRefs?: ExternalRef[];
+  sourceKind?: string | null;
   parentId?: string;
   size?: { width: number; height: number };
 };
@@ -69,6 +74,10 @@ type PlannerSnapshot = {
     description: string;
     completionCriteria: string;
     tags: string[];
+    conceptId?: string | null;
+    externalRefs?: ExternalRef[];
+    sourceKind?: string | null;
+    memoryScope?: MemoryScope;
   };
   nodes: PlannerNodeRecord[];
   edges: PlannerEdgeRecord[];
@@ -169,6 +178,11 @@ const LEFT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-left-panel-width-v1';
 const RIGHT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-right-panel-width-v1';
 const OPENAI_API_KEY_STORAGE_KEY = 'project-planner-openai-api-key-v1';
 const SUPERMEMORY_API_KEY_STORAGE_KEY = 'project-planner-supermemory-api-key-v1';
+const NOTION_API_KEY_STORAGE_KEY = 'project-planner-notion-api-key-v1';
+const NOTION_PARENT_ID_STORAGE_KEY = 'project-planner-notion-parent-id-v1';
+const TASK_GRAPH_MCP_URL_STORAGE_KEY = 'project-planner-task-graph-mcp-url-v1';
+const SUPERMEMORY_MCP_URL_STORAGE_KEY = 'project-planner-supermemory-mcp-url-v1';
+const NOTION_MCP_URL_STORAGE_KEY = 'project-planner-notion-mcp-url-v1';
 const mainTab: TabDescriptor = { id: 'main', kind: 'main' };
 const groupSize = { width: 360, height: 180 };
 const taskSize = { width: 260, height: 120 };
@@ -325,6 +339,14 @@ const seedSnapshot = (): PlannerSnapshot => ({
     description: 'Top-level project workflow across the whole plan.',
     completionCriteria: 'The main delivery path and major grouped workstreams are represented clearly.',
     tags: ['Planning.Root'],
+    conceptId: 'project-root',
+    externalRefs: [],
+    sourceKind: 'human-authored',
+    memoryScope: {
+      containerTags: ['project-root'],
+      metadataDefaults: { projectId: 'project-root' },
+      retrievalDefaults: { limit: 6, searchMode: 'hybrid' },
+    },
   },
   nodes: [
     {
@@ -336,6 +358,9 @@ const seedSnapshot = (): PlannerSnapshot => ({
       description: 'Align the project around the user problem and the outcome the workflow should support.',
       completionCriteria: 'Vision statement is agreed and clearly readable by the team.',
       tags: ['Planning.Strategy'],
+      conceptId: 'vision',
+      externalRefs: [],
+      sourceKind: 'human-authored',
     },
     {
       id: 'research',
@@ -346,6 +371,9 @@ const seedSnapshot = (): PlannerSnapshot => ({
       description: 'Collect the main needs and constraints from likely users of the planner.',
       completionCriteria: 'At least a concise list of recurring needs is captured.',
       tags: ['Research.Users'],
+      conceptId: 'research-users',
+      externalRefs: [],
+      sourceKind: 'human-authored',
     },
     {
       id: 'architecture',
@@ -356,6 +384,9 @@ const seedSnapshot = (): PlannerSnapshot => ({
       description: 'Choose the graph, state, and UI architecture for the first version.',
       completionCriteria: 'The team can explain how tasks, groups, and dependencies are represented.',
       tags: ['Planning.Architecture'],
+      conceptId: 'architecture',
+      externalRefs: [],
+      sourceKind: 'human-authored',
     },
     {
       id: 'prototype',
@@ -366,6 +397,9 @@ const seedSnapshot = (): PlannerSnapshot => ({
       description: 'Deliver a working prototype that demonstrates nested task planning.',
       completionCriteria: 'Core workflow is testable in the browser.',
       tags: ['Delivery.Prototype'],
+      conceptId: 'build-prototype',
+      externalRefs: [],
+      sourceKind: 'human-authored',
       size: { ...groupSize },
     },
     {
@@ -377,6 +411,9 @@ const seedSnapshot = (): PlannerSnapshot => ({
       description: 'Build the main layout with the graph canvas and supporting panels.',
       completionCriteria: 'Users can view and navigate the planner comfortably.',
       tags: ['Implementation.UI.Shell'],
+      conceptId: 'ui-shell',
+      externalRefs: [],
+      sourceKind: 'human-authored',
       parentId: 'prototype',
     },
     {
@@ -388,6 +425,9 @@ const seedSnapshot = (): PlannerSnapshot => ({
       description: 'Implement the core graph logic around unlocking and nested decomposition.',
       completionCriteria: 'Availability and dependency behavior work across nested items.',
       tags: ['Implementation.Workflow'],
+      conceptId: 'task-workflow',
+      externalRefs: [],
+      sourceKind: 'human-authored',
       parentId: 'prototype',
       size: { ...groupSize },
     },
@@ -400,6 +440,9 @@ const seedSnapshot = (): PlannerSnapshot => ({
       description: 'Support dependency relationships across tasks inside the same scope.',
       completionCriteria: 'Blocked tasks respond correctly to completed prerequisites.',
       tags: ['Implementation.Workflow.Dependencies'],
+      conceptId: 'map-dependencies',
+      externalRefs: [],
+      sourceKind: 'human-authored',
       parentId: 'workflow',
     },
     {
@@ -411,6 +454,9 @@ const seedSnapshot = (): PlannerSnapshot => ({
       description: 'Expose which tasks can be worked on right now.',
       completionCriteria: 'The available tasks panel updates correctly when statuses change.',
       tags: ['Implementation.Workflow.Availability'],
+      conceptId: 'show-available-work',
+      externalRefs: [],
+      sourceKind: 'human-authored',
       parentId: 'workflow',
     },
     {
@@ -422,6 +468,9 @@ const seedSnapshot = (): PlannerSnapshot => ({
       description: 'Review the prototype flow and edge cases before release.',
       completionCriteria: 'Critical workflow issues are identified and documented.',
       tags: ['QA.Review'],
+      conceptId: 'qa-review',
+      externalRefs: [],
+      sourceKind: 'human-authored',
     },
     {
       id: 'launch',
@@ -432,6 +481,9 @@ const seedSnapshot = (): PlannerSnapshot => ({
       description: 'Prepare the prototype for a clean handoff or demo.',
       completionCriteria: 'Demo path is stable and ready to share.',
       tags: ['Delivery.Launch'],
+      conceptId: 'launch-prep',
+      externalRefs: [],
+      sourceKind: 'human-authored',
     },
   ],
   edges: [
@@ -451,6 +503,14 @@ const blankSnapshot = (): PlannerSnapshot => ({
     description: '',
     completionCriteria: '',
     tags: [],
+    conceptId: null,
+    externalRefs: [],
+    sourceKind: 'human-authored',
+    memoryScope: {
+      containerTags: [],
+      metadataDefaults: {},
+      retrievalDefaults: { limit: 6, searchMode: 'hybrid' },
+    },
   },
   nodes: [],
   edges: [],
@@ -484,7 +544,7 @@ const isSameScope = (nodes: PlannerNodeRecord[], sourceId: string, targetId: str
   return getNodeScope(source) === getNodeScope(target);
 };
 
-const sanitizeSnapshot = (snapshot: PlannerSnapshot): PlannerSnapshot => {
+export const sanitizeSnapshot = (snapshot: PlannerSnapshot): PlannerSnapshot => {
   const rawRoot = snapshot.root as PlannerSnapshot['root'] & {
     acceptanceCriteria?: string;
     tags?: unknown;
@@ -497,6 +557,24 @@ const sanitizeSnapshot = (snapshot: PlannerSnapshot): PlannerSnapshot => {
     tags: Array.isArray(rawRoot?.tags)
       ? rawRoot.tags.map((tag) => normalizeTag(String(tag))).filter(Boolean)
       : [],
+    conceptId: rawRoot?.conceptId ?? null,
+    externalRefs: Array.isArray(rawRoot?.externalRefs) ? rawRoot.externalRefs : [],
+    sourceKind: rawRoot?.sourceKind ?? null,
+    memoryScope: {
+      containerTags: Array.isArray(rawRoot?.memoryScope?.containerTags)
+        ? rawRoot.memoryScope.containerTags.map((tag: unknown) => String(tag)).filter(Boolean)
+        : [],
+      metadataDefaults:
+        rawRoot?.memoryScope && typeof rawRoot.memoryScope.metadataDefaults === 'object' && rawRoot.memoryScope.metadataDefaults
+          ? Object.fromEntries(
+              Object.entries(rawRoot.memoryScope.metadataDefaults as Record<string, unknown>).map(([key, value]) => [key, String(value)]),
+            )
+          : {},
+      retrievalDefaults: {
+        limit: Number(rawRoot?.memoryScope?.retrievalDefaults?.limit ?? 6),
+        searchMode: String(rawRoot?.memoryScope?.retrievalDefaults?.searchMode ?? 'hybrid'),
+      },
+    },
   };
 
   const nodes = snapshot.nodes.map((node) => {
@@ -512,15 +590,37 @@ const sanitizeSnapshot = (snapshot: PlannerSnapshot): PlannerSnapshot => {
       tags: Array.isArray(legacyNode.tags)
         ? legacyNode.tags.map((tag) => normalizeTag(String(tag))).filter(Boolean)
         : [],
+      conceptId: legacyNode.conceptId ?? null,
+      externalRefs: Array.isArray(legacyNode.externalRefs) ? legacyNode.externalRefs : [],
+      sourceKind: legacyNode.sourceKind ?? null,
     };
   });
 
   const nodeIds = new Set(nodes.map((node) => node.id));
+  const seenEdgeIds = new Set<string>();
+  const seenEdgePairs = new Set<string>();
   const edges = snapshot.edges.filter((edge) => {
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
       return false;
     }
-    return isSameScope(nodes, edge.source, edge.target);
+    if (edge.source === edge.target) {
+      return false;
+    }
+    if (!isSameScope(nodes, edge.source, edge.target)) {
+      return false;
+    }
+    if (seenEdgeIds.has(edge.id)) {
+      return false;
+    }
+
+    const pairKey = `${edge.source}::${edge.target}`;
+    if (seenEdgePairs.has(pairKey)) {
+      return false;
+    }
+
+    seenEdgeIds.add(edge.id);
+    seenEdgePairs.add(pairKey);
+    return true;
   });
 
   return { root, nodes, edges };
@@ -1280,6 +1380,46 @@ const getStoredOpenaiApiKey = () => {
   return window.localStorage.getItem(OPENAI_API_KEY_STORAGE_KEY) ?? '';
 };
 
+const getStoredNotionApiKey = () => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  return window.localStorage.getItem(NOTION_API_KEY_STORAGE_KEY) ?? '';
+};
+
+const getStoredNotionParentId = () => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  return window.localStorage.getItem(NOTION_PARENT_ID_STORAGE_KEY) ?? '';
+};
+
+const getStoredTaskGraphMcpUrl = () => {
+  if (typeof window === 'undefined') {
+    return '/api/mcp/task-graph';
+  }
+
+  return window.localStorage.getItem(TASK_GRAPH_MCP_URL_STORAGE_KEY) ?? '/api/mcp/task-graph';
+};
+
+const getStoredSupermemoryMcpUrl = () => {
+  if (typeof window === 'undefined') {
+    return '/api/mcp/supermemory';
+  }
+
+  return window.localStorage.getItem(SUPERMEMORY_MCP_URL_STORAGE_KEY) ?? '/api/mcp/supermemory';
+};
+
+const getStoredNotionMcpUrl = () => {
+  if (typeof window === 'undefined') {
+    return '/api/mcp/notion';
+  }
+
+  return window.localStorage.getItem(NOTION_MCP_URL_STORAGE_KEY) ?? '/api/mcp/notion';
+};
+
 const nextAvailableOffset = (nodes: PlannerNodeRecord[], parentId?: string) => {
   const siblings = nodes.filter((node) => node.parentId === parentId);
   return {
@@ -1520,6 +1660,11 @@ function PlannerApp() {
   const [rightPanelWidth, setRightPanelWidth] = useState(() => getStoredRightPanelWidth());
   const [openaiApiKey, setOpenaiApiKey] = useState(() => getStoredOpenaiApiKey());
   const [supermemoryApiKey, setSupermemoryApiKey] = useState(() => getStoredSupermemoryApiKey());
+  const [notionApiKey, setNotionApiKey] = useState(() => getStoredNotionApiKey());
+  const [notionParentId, setNotionParentId] = useState(() => getStoredNotionParentId());
+  const [taskGraphMcpUrl, setTaskGraphMcpUrl] = useState(() => getStoredTaskGraphMcpUrl());
+  const [supermemoryMcpUrl, setSupermemoryMcpUrl] = useState(() => getStoredSupermemoryMcpUrl());
+  const [notionMcpUrl, setNotionMcpUrl] = useState(() => getStoredNotionMcpUrl());
   const [dragDropTarget, setDragDropTarget] = useState<NodeDropTarget>(null);
   const [dragPreviewNodeId, setDragPreviewNodeId] = useState<string | null>(null);
   const [flowViewport, setFlowViewport] = useState({ x: 0, y: 0, zoom: 1 });
@@ -1537,6 +1682,8 @@ function PlannerApp() {
   const syncTimerRef = useRef<number | null>(null);
   const syncPromiseRef = useRef<Promise<void> | null>(null);
   const syncResolveRef = useRef<(() => void) | null>(null);
+  const syncInFlightRef = useRef(false);
+  const queuedSnapshotRef = useRef<PlannerSnapshot | null>(null);
   const lastSyncedSnapshotRef = useRef(serializeSnapshot(snapshot));
   const activeScopeId: ScopeId = activeTabId === 'main' ? null : activeTabId;
 
@@ -1579,6 +1726,26 @@ function PlannerApp() {
   useEffect(() => {
     window.localStorage.setItem(SUPERMEMORY_API_KEY_STORAGE_KEY, supermemoryApiKey);
   }, [supermemoryApiKey]);
+
+  useEffect(() => {
+    window.localStorage.setItem(NOTION_API_KEY_STORAGE_KEY, notionApiKey);
+  }, [notionApiKey]);
+
+  useEffect(() => {
+    window.localStorage.setItem(NOTION_PARENT_ID_STORAGE_KEY, notionParentId);
+  }, [notionParentId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(TASK_GRAPH_MCP_URL_STORAGE_KEY, taskGraphMcpUrl);
+  }, [taskGraphMcpUrl]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SUPERMEMORY_MCP_URL_STORAGE_KEY, supermemoryMcpUrl);
+  }, [supermemoryMcpUrl]);
+
+  useEffect(() => {
+    window.localStorage.setItem(NOTION_MCP_URL_STORAGE_KEY, notionMcpUrl);
+  }, [notionMcpUrl]);
 
   useEffect(() => {
     snapshotRef.current = snapshot;
@@ -1627,8 +1794,69 @@ function PlannerApp() {
     [applyServerProjectGraph],
   );
 
+  const ensureSyncPromise = useCallback(() => {
+    if (!syncPromiseRef.current) {
+      syncPromiseRef.current = new Promise<void>((resolve) => {
+        syncResolveRef.current = resolve;
+      });
+    }
+    return syncPromiseRef.current;
+  }, []);
+
+  const resolveSyncPromise = useCallback(() => {
+    syncResolveRef.current?.();
+    syncResolveRef.current = null;
+    syncPromiseRef.current = null;
+  }, []);
+
+  const processQueuedSnapshotSync = useCallback(async () => {
+    if (syncInFlightRef.current) {
+      return ensureSyncPromise();
+    }
+
+    if (!queuedSnapshotRef.current) {
+      resolveSyncPromise();
+      return null;
+    }
+
+    ensureSyncPromise();
+    syncInFlightRef.current = true;
+
+    try {
+      while (queuedSnapshotRef.current) {
+        const nextSnapshot = sanitizeSnapshot(queuedSnapshotRef.current);
+        queuedSnapshotRef.current = null;
+
+        if (serializeSnapshot(nextSnapshot) === lastSyncedSnapshotRef.current) {
+          continue;
+        }
+
+        await persistSnapshotToServer(nextSnapshot);
+      }
+      setGraphSyncError(null);
+    } catch (error) {
+      queuedSnapshotRef.current = null;
+      setGraphSyncError(error instanceof Error ? error.message : 'Could not persist the workflow.');
+    } finally {
+      syncInFlightRef.current = false;
+      resolveSyncPromise();
+    }
+
+    return null;
+  }, [ensureSyncPromise, persistSnapshotToServer, resolveSyncPromise]);
+
+  const queueSnapshotSync = useCallback(
+    (nextSnapshot: PlannerSnapshot) => {
+      queuedSnapshotRef.current = sanitizeSnapshot(nextSnapshot);
+      void processQueuedSnapshotSync();
+      return ensureSyncPromise();
+    },
+    [ensureSyncPromise, processQueuedSnapshotSync],
+  );
+
   const flushProjectGraphSync = useCallback(async () => {
-    const nextSerialized = serializeSnapshot(snapshotRef.current);
+    const snapshotToSync = sanitizeSnapshot(snapshotRef.current);
+    const nextSerialized = serializeSnapshot(snapshotToSync);
     if (!hasHydratedProjectRef.current || nextSerialized === lastSyncedSnapshotRef.current) {
       return;
     }
@@ -1638,23 +1866,8 @@ function PlannerApp() {
       syncTimerRef.current = null;
     }
 
-    if (!syncPromiseRef.current) {
-      const pending = persistSnapshotToServer(snapshotRef.current)
-        .catch((error) => {
-          setGraphSyncError(error instanceof Error ? error.message : 'Could not persist the workflow.');
-        })
-        .finally(() => {
-          syncPromiseRef.current = null;
-          syncResolveRef.current?.();
-          syncResolveRef.current = null;
-        });
-      syncPromiseRef.current = pending;
-    }
-
-    if (syncPromiseRef.current) {
-      await syncPromiseRef.current;
-    }
-  }, [persistSnapshotToServer]);
+    await queueSnapshotSync(snapshotToSync);
+  }, [queueSnapshotSync]);
 
   const initializeProjectGraph = useCallback(async () => {
     setIsProjectGraphLoading(true);
@@ -1707,23 +1920,11 @@ function PlannerApp() {
 
     if (syncTimerRef.current !== null) {
       window.clearTimeout(syncTimerRef.current);
-    } else {
-      syncPromiseRef.current = new Promise<void>((resolve) => {
-        syncResolveRef.current = resolve;
-      });
     }
 
     syncTimerRef.current = window.setTimeout(() => {
       syncTimerRef.current = null;
-      void persistSnapshotToServer(snapshot)
-        .catch((error) => {
-          setGraphSyncError(error instanceof Error ? error.message : 'Could not persist the workflow.');
-        })
-        .finally(() => {
-          syncPromiseRef.current = null;
-          syncResolveRef.current?.();
-          syncResolveRef.current = null;
-        });
+      void queueSnapshotSync(snapshot);
     }, 300);
 
     return () => {
@@ -1732,7 +1933,7 @@ function PlannerApp() {
         syncTimerRef.current = null;
       }
     };
-  }, [snapshot, persistSnapshotToServer]);
+  }, [queueSnapshotSync, snapshot]);
 
   const handleInspectorFieldFocus = useCallback(() => {
     isInspectorEditingRef.current = true;
@@ -3079,18 +3280,6 @@ function PlannerApp() {
                 </div>
               </aside>
 
-              <aside className="floating-ai-panel" aria-label="AI assistant">
-                <AiPanel
-                  projectId={projectId}
-                  activeTabId={activeTabId}
-                  selectedNodeIds={selectedNodeIds}
-                  visibleNodeIds={scopeNodes.map((node) => node.id)}
-                  openaiApiKey={openaiApiKey}
-                  supermemoryApiKey={supermemoryApiKey}
-                  disabled={isProjectGraphLoading}
-                  onApplied={(project) => applyServerProjectGraph(projectIdRef.current, project as PlannerSnapshot)}
-                />
-              </aside>
             </div>
 
             <main
@@ -3258,7 +3447,25 @@ function PlannerApp() {
                   proOptions={{ hideAttribution: true }}
                 >
                 </ReactFlow>
-              </main>
+            </main>
+
+            <aside className="floating-ai-panel floating-ai-panel--dock" aria-label="AI assistant">
+              <AiPanel
+                projectId={projectId}
+                activeTabId={activeTabId}
+                selectedNodeIds={selectedNodeIds}
+                visibleNodeIds={scopeNodes.map((node) => node.id)}
+                openaiApiKey={openaiApiKey}
+                supermemoryApiKey={supermemoryApiKey}
+                notionApiKey={notionApiKey}
+                notionParentId={notionParentId}
+                taskGraphMcpUrl={taskGraphMcpUrl}
+                supermemoryMcpUrl={supermemoryMcpUrl}
+                notionMcpUrl={notionMcpUrl}
+                disabled={isProjectGraphLoading}
+                onApplied={(project) => applyServerProjectGraph(projectIdRef.current, project as PlannerSnapshot)}
+              />
+            </aside>
 
               <aside className="floating-properties-panel floating-properties-panel--resizable" style={{ width: leftPanelWidth }}>
                   <button
@@ -3459,6 +3666,133 @@ function PlannerApp() {
                   />
                 </label>
                 <p className="muted">Stored in this browser only and sent with AI chat and proposal apply requests.</p>
+              </div>
+
+              <div className="settings-section">
+                <div className="panel-header">
+                  <h2>Knowledge Sources</h2>
+                  <span className={['status-pill', notionApiKey.trim() ? 'is-online' : 'is-offline'].join(' ')}>
+                    {notionApiKey.trim() ? 'configured' : 'not set'}
+                  </span>
+                </div>
+                <label className="glass-field">
+                  Notion API Key
+                  <input
+                    type="password"
+                    value={notionApiKey}
+                    placeholder="secret_..."
+                    onChange={(event) => setNotionApiKey(event.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="glass-field">
+                  Notion Parent Page / Database ID
+                  <input
+                    value={notionParentId}
+                    placeholder="page-or-database-id"
+                    onChange={(event) => setNotionParentId(event.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <p className="muted">Stored in this browser only and sent with retrieval or writeback requests when you trigger them from the UI.</p>
+              </div>
+
+              <div className="settings-section">
+                <div className="panel-header">
+                  <h2>MCP Endpoints</h2>
+                  <span className="status-pill is-online">UI configured</span>
+                </div>
+                <label className="glass-field">
+                  Task Graph MCP URL
+                  <input value={taskGraphMcpUrl} onChange={(event) => setTaskGraphMcpUrl(event.target.value)} spellCheck={false} />
+                </label>
+                <label className="glass-field">
+                  Supermemory MCP URL
+                  <input value={supermemoryMcpUrl} onChange={(event) => setSupermemoryMcpUrl(event.target.value)} spellCheck={false} />
+                </label>
+                <label className="glass-field">
+                  Notion MCP URL
+                  <input value={notionMcpUrl} onChange={(event) => setNotionMcpUrl(event.target.value)} spellCheck={false} />
+                </label>
+                <p className="muted">These endpoints stay in browser storage so the UI can route each request to the MCP services you want to use.</p>
+              </div>
+
+              <div className="settings-section">
+                <div className="panel-header">
+                  <h2>Project Memory Scope</h2>
+                  <span className="status-pill">{snapshot.root.memoryScope?.retrievalDefaults.searchMode ?? 'hybrid'}</span>
+                </div>
+                <label className="glass-field">
+                  Container Tags
+                  <input
+                    value={(snapshot.root.memoryScope?.containerTags ?? []).join(', ')}
+                    onChange={(event) =>
+                      setSnapshot((current) => ({
+                        ...current,
+                        root: {
+                          ...current.root,
+                          memoryScope: {
+                            ...(current.root.memoryScope ?? { containerTags: [], metadataDefaults: {}, retrievalDefaults: { limit: 6, searchMode: 'hybrid' } }),
+                            containerTags: event.target.value
+                              .split(',')
+                              .map((tag) => tag.trim())
+                              .filter(Boolean),
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label className="glass-field">
+                  Metadata Defaults
+                  <textarea
+                    rows={3}
+                    value={JSON.stringify(snapshot.root.memoryScope?.metadataDefaults ?? {}, null, 2)}
+                    onChange={(event) => {
+                      try {
+                        const nextValue = JSON.parse(event.target.value) as Record<string, string>;
+                        setSnapshot((current) => ({
+                          ...current,
+                          root: {
+                            ...current.root,
+                            memoryScope: {
+                              ...(current.root.memoryScope ?? { containerTags: [], metadataDefaults: {}, retrievalDefaults: { limit: 6, searchMode: 'hybrid' } }),
+                              metadataDefaults: Object.fromEntries(Object.entries(nextValue).map(([key, value]) => [key, String(value)])),
+                            },
+                          },
+                        }));
+                      } catch {
+                        // Ignore invalid JSON while typing.
+                      }
+                    }}
+                  />
+                </label>
+                <label className="glass-field">
+                  Retrieval Limit
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={snapshot.root.memoryScope?.retrievalDefaults.limit ?? 6}
+                    onChange={(event) =>
+                      setSnapshot((current) => ({
+                        ...current,
+                        root: {
+                          ...current.root,
+                          memoryScope: {
+                            ...(current.root.memoryScope ?? { containerTags: [], metadataDefaults: {}, retrievalDefaults: { limit: 6, searchMode: 'hybrid' } }),
+                            retrievalDefaults: {
+                              ...(current.root.memoryScope?.retrievalDefaults ?? { limit: 6, searchMode: 'hybrid' }),
+                              limit: Number(event.target.value) || 6,
+                            },
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </label>
               </div>
 
               <div className="settings-section">
