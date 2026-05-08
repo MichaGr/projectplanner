@@ -8,7 +8,7 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, select
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, insert, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
@@ -282,6 +282,34 @@ def validate_snapshot(snapshot: PlannerSnapshotPayload) -> None:
         visit(node_id)
 
 
+def order_nodes_for_insert(nodes: list[NodePayload]) -> list[NodePayload]:
+    nodes_by_id = {node.id: node for node in nodes}
+    ordered: list[NodePayload] = []
+    visiting: set[str] = set()
+    inserted: set[str] = set()
+
+    def add_node(node: NodePayload) -> None:
+        if node.id in inserted:
+            return
+        if node.id in visiting:
+            raise HTTPException(status_code=400, detail="Node hierarchy cycles are not allowed.")
+
+        visiting.add(node.id)
+        if node.parentId:
+            parent = nodes_by_id.get(node.parentId)
+            if not parent:
+                raise HTTPException(status_code=400, detail=f"Parent node {node.parentId} does not exist.")
+            add_node(parent)
+        visiting.remove(node.id)
+        inserted.add(node.id)
+        ordered.append(node)
+
+    for node in nodes:
+        add_node(node)
+
+    return ordered
+
+
 def replace_graph(session: Session, project: ProjectModel, snapshot: PlannerSnapshotPayload) -> None:
     validate_snapshot(snapshot)
 
@@ -292,36 +320,50 @@ def replace_graph(session: Session, project: ProjectModel, snapshot: PlannerSnap
     project.graph_version += 1
     project.updated_at = utc_now()
 
-    session.query(NodeModel).filter(NodeModel.project_id == project.id).delete()
-    session.query(EdgeModel).filter(EdgeModel.project_id == project.id).delete()
+    session.execute(delete(EdgeModel).where(EdgeModel.project_id == project.id))
+    session.execute(delete(NodeModel).where(NodeModel.project_id == project.id))
 
-    for node in snapshot.nodes:
-        session.add(
-            NodeModel(
-                id=node.id,
-                project_id=project.id,
-                kind=node.kind,
-                title=node.title,
-                status=node.status,
-                description=node.description,
-                completion_criteria=node.completionCriteria,
-                tags=list(node.tags),
-                parent_node_id=node.parentId,
-                position_x=node.position["x"],
-                position_y=node.position["y"],
-                width=node.size["width"] if node.size else None,
-                height=node.size["height"] if node.size else None,
-            )
+    timestamp = utc_now()
+    ordered_nodes = order_nodes_for_insert(snapshot.nodes)
+    if ordered_nodes:
+        session.execute(
+            insert(NodeModel),
+            [
+                {
+                    "id": node.id,
+                    "project_id": project.id,
+                    "kind": node.kind,
+                    "title": node.title,
+                    "status": node.status,
+                    "description": node.description,
+                    "completion_criteria": node.completionCriteria,
+                    "tags": list(node.tags),
+                    "parent_node_id": node.parentId,
+                    "position_x": node.position["x"],
+                    "position_y": node.position["y"],
+                    "width": node.size["width"] if node.size else None,
+                    "height": node.size["height"] if node.size else None,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+                for node in ordered_nodes
+            ],
         )
 
-    for edge in snapshot.edges:
-        session.add(
-            EdgeModel(
-                id=edge.id,
-                project_id=project.id,
-                source_node_id=edge.source,
-                target_node_id=edge.target,
-            )
+    if snapshot.edges:
+        session.execute(
+            insert(EdgeModel),
+            [
+                {
+                    "id": edge.id,
+                    "project_id": project.id,
+                    "source_node_id": edge.source,
+                    "target_node_id": edge.target,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+                for edge in snapshot.edges
+            ],
         )
 
 

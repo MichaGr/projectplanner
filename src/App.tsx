@@ -1604,12 +1604,13 @@ function PlannerApp() {
       return;
     }
 
+    const hasPendingDebouncedSync = syncTimerRef.current !== null;
     if (syncTimerRef.current !== null) {
       window.clearTimeout(syncTimerRef.current);
       syncTimerRef.current = null;
     }
 
-    if (!syncPromiseRef.current) {
+    if (hasPendingDebouncedSync || !syncPromiseRef.current) {
       const pending = persistSnapshotToServer(snapshotRef.current)
         .catch((error) => {
           setGraphSyncError(error instanceof Error ? error.message : 'Could not persist the workflow.');
@@ -3238,10 +3239,10 @@ function PlannerApp() {
                             onBlur={handleInspectorFieldBlur}
                           />
                         </label>
-                        <label className="glass-field">
+                        <label className="glass-field glass-field--description">
                           Description
                           <textarea
-                            rows={5}
+                            className="glass-field__textarea"
                             value={snapshot.root.description}
                             onChange={(event) => setRootField('description', event.target.value)}
                             onFocus={handleInspectorFieldFocus}
@@ -3261,10 +3262,10 @@ function PlannerApp() {
                             onBlur={handleInspectorFieldBlur}
                           />
                         </label>
-                        <label className="glass-field">
+                        <label className="glass-field glass-field--description">
                           Description
                           <textarea
-                            rows={5}
+                            className="glass-field__textarea"
                             value={panelItem.description}
                             onChange={(event) => setNodeField(panelItem.id, 'description', event.target.value)}
                             onFocus={handleInspectorFieldFocus}

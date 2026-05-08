@@ -535,7 +535,7 @@
   }
 
   .floating-properties-panel {
-    @apply right-6 top-6;
+    @apply right-6 top-6 bottom-6 flex;
     width: 22rem;
   }
 
@@ -563,8 +563,8 @@
   }
 
   .glass-panel--stack {
-    @apply flex flex-col gap-4 overflow-y-auto p-4;
-    max-height: calc(100vh - 9rem);
+    @apply flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4;
+    max-height: none;
   }
 
   .ai-dialog-panel {
@@ -631,6 +631,10 @@
     @apply gap-3 bg-transparent p-0;
   }
 
+  .glass-field--description {
+    @apply min-h-0 flex-1;
+  }
+
   .glass-field input,
   .glass-field textarea {
     background: rgba(225, 195, 255, 0.05);
@@ -642,6 +646,10 @@
   .glass-field input:focus,
   .glass-field textarea:focus {
     background: rgba(225, 195, 255, 0.08);
+  }
+
+  .glass-field__textarea {
+    @apply min-h-0 flex-1 resize-none;
   }
 
   .floating-sync-button {
