@@ -34,15 +34,19 @@ import {
 import {
   Check,
   ChevronDown,
-  ChevronRight,
+  Download,
   ExternalLink,
   GitFork,
-  Network,
+  Menu,
+  MoreHorizontal,
+  PanelRight,
   Pencil,
   Plus,
   Search,
+  Settings,
   Trash2,
   TriangleAlert,
+  Upload,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -176,11 +180,10 @@ type BackendStatus = 'checking' | 'online' | 'offline';
 
 const STORAGE_KEY = 'project-planner-state-v2';
 const THEME_STORAGE_KEY = 'project-planner-theme-v1';
-const LEFT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-left-panel-width-v1';
-const RIGHT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-right-panel-width-v1';
+const RIGHT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-right-panel-width-v2';
 const mainTab: TabDescriptor = { id: 'main', kind: 'main' };
-const groupSize = { width: 360, height: 180 };
-const taskSize = { width: 260, height: 120 };
+const groupSize = { width: 280, height: 132 };
+const taskSize = { width: 210, height: 88 };
 const particleGridConfig = {
   spacing: 26,
   attractRadius: 148,
@@ -1273,28 +1276,16 @@ const getStoredTheme = (): ThemeMode => {
   return 'dark';
 };
 
-const clampLeftPanelWidth = (value: number) => Math.min(720, Math.max(320, value));
-
-const clampRightPanelWidth = (value: number) => Math.min(720, Math.max(360, value));
-
-const getStoredLeftPanelWidth = () => {
-  if (typeof window === 'undefined') {
-    return 380;
-  }
-
-  const raw = window.localStorage.getItem(LEFT_PANEL_WIDTH_STORAGE_KEY);
-  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(parsed) ? clampLeftPanelWidth(parsed) : 380;
-};
+const clampRightPanelWidth = (value: number) => Math.min(420, Math.max(260, value));
 
 const getStoredRightPanelWidth = () => {
   if (typeof window === 'undefined') {
-    return 440;
+    return 300;
   }
 
   const raw = window.localStorage.getItem(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const parsed = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(parsed) ? clampRightPanelWidth(parsed) : 440;
+  return Number.isFinite(parsed) ? clampRightPanelWidth(parsed) : 300;
 };
 
 const nextAvailableOffset = (nodes: PlannerNodeRecord[], parentId?: string) => {
@@ -1320,8 +1311,6 @@ const ToolbarIcon = ({ name }: { name: ToolbarIconName }) => {
   const Icon: LucideIcon = toolbarIcons[name];
   return <Icon className="app-icon" aria-hidden="true" />;
 };
-
-const Graph3Icon = () => <Network className="app-icon" aria-hidden="true" />;
 
 const NodeActions = ({ data }: { data: RenderNodeData }) => (
   <div className="node-actions nodrag nopan">
@@ -1506,9 +1495,10 @@ const TagTree = ({
 );
 
 function PlannerApp() {
-  const { screenToFlowPosition, setCenter, getZoom, fitView, getViewport } = useReactFlow();
+  const { screenToFlowPosition, setCenter, getZoom, getViewport } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const canvasShellRef = useRef<HTMLElement | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string>(() => getStoredWorkspaceId());
   const [projectId, setProjectId] = useState<string>(() => getStoredProjectId());
   const [snapshot, setSnapshot] = useState<PlannerSnapshot>(() => getStoredSnapshot());
@@ -1522,18 +1512,18 @@ function PlannerApp() {
   const [fileFeedback, setFileFeedback] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [tagQuery, setTagQuery] = useState('');
-  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(false);
-  const [leftPanelWidth, setLeftPanelWidth] = useState(() => getStoredLeftPanelWidth());
   const [shouldFocusSelectedTitle, setShouldFocusSelectedTitle] = useState(false);
   const [insertionEdgeId, setInsertionEdgeId] = useState<string | null>(null);
   const [pendingCenteredNodeId, setPendingCenteredNodeId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState(false);
+  const [isProjectMenuOpen, setIsProjectMenuOpen] = useState(false);
+  const [isLeftDrawerOpen, setIsLeftDrawerOpen] = useState(false);
+  const [isRightDrawerOpen, setIsRightDrawerOpen] = useState(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
-  const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
   const [isWorkspaceTreeLoading, setIsWorkspaceTreeLoading] = useState(false);
   const [workspaceTreeError, setWorkspaceTreeError] = useState<string | null>(null);
   const [loadingStoredProjectId, setLoadingStoredProjectId] = useState<string | null>(null);
-  const [isAvailableWorkExpanded, setIsAvailableWorkExpanded] = useState(true);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking');
   const [sessionJournal, setSessionJournal] = useState<SessionJournalEntry[]>([]);
   const [rightPanelWidth, setRightPanelWidth] = useState(() => getStoredRightPanelWidth());
@@ -1544,7 +1534,6 @@ function PlannerApp() {
   const [isProjectGraphLoading, setIsProjectGraphLoading] = useState(true);
   const [graphSyncError, setGraphSyncError] = useState<string | null>(null);
   const isResizingPanelRef = useRef(false);
-  const isResizingLeftPanelRef = useRef(false);
   const canvasNodesRef = useRef<PlannerFlowNode[]>([]);
   const snapshotRef = useRef(snapshot);
   const workspaceIdRef = useRef(workspaceId);
@@ -1570,6 +1559,25 @@ function PlannerApp() {
   );
   const [canvasNodes, setCanvasNodes] = useState<PlannerFlowNode[]>([]);
 
+  const fitCurrentGraph = useCallback((duration = 300) => {
+    const canvas = canvasShellRef.current;
+    const nodes = canvasNodesRef.current;
+    if (!canvas || nodes.length === 0) return;
+
+    const rects = nodes.map((node) => ({ ...node.position, ...getFlowNodeDimensions(node) }));
+    const minX = Math.min(...rects.map((rect) => rect.x));
+    const minY = Math.min(...rects.map((rect) => rect.y));
+    const maxX = Math.max(...rects.map((rect) => rect.x + rect.width));
+    const maxY = Math.max(...rects.map((rect) => rect.y + rect.height));
+    const graphWidth = Math.max(1, maxX - minX);
+    const graphHeight = Math.max(1, maxY - minY);
+    const availableWidth = Math.max(1, canvas.clientWidth - 64);
+    const availableHeight = Math.max(1, canvas.clientHeight - 96);
+    const zoom = Math.max(0.2, Math.min(1, availableWidth / graphWidth, availableHeight / graphHeight));
+
+    void setCenter(minX + graphWidth / 2, minY + graphHeight / 2, { zoom, duration });
+  }, [setCenter]);
+
   useEffect(() => {
     window.localStorage.setItem(
       STORAGE_KEY,
@@ -1581,10 +1589,6 @@ function PlannerApp() {
     window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
     document.documentElement.dataset.theme = themeMode;
   }, [themeMode]);
-
-  useEffect(() => {
-    window.localStorage.setItem(LEFT_PANEL_WIDTH_STORAGE_KEY, String(leftPanelWidth));
-  }, [leftPanelWidth]);
 
   useEffect(() => {
     window.localStorage.setItem(RIGHT_PANEL_WIDTH_STORAGE_KEY, String(rightPanelWidth));
@@ -1619,9 +1623,6 @@ function PlannerApp() {
     try {
       const nextWorkspaces = await listWorkspaces();
       setWorkspaces(nextWorkspaces);
-      setExpandedWorkspaceIds((current) => [
-        ...new Set([...current, ...nextWorkspaces.map((workspace) => workspace.workspaceId)]),
-      ]);
       return nextWorkspaces;
     } catch (error) {
       setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not load workspaces.');
@@ -1816,26 +1817,15 @@ function PlannerApp() {
   }, [isSettingsOpen]);
 
   useEffect(() => {
-    const handlePointerMove = (event: MouseEvent) => {
-      if (!isResizingLeftPanelRef.current) {
-        return;
-      }
-
-      const nextWidth = clampLeftPanelWidth(window.innerWidth - event.clientX - 24);
-      setLeftPanelWidth(nextWidth);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setIsWorkspaceMenuOpen(false);
+      setIsProjectMenuOpen(false);
+      setIsLeftDrawerOpen(false);
+      setIsRightDrawerOpen(false);
     };
-
-    const handlePointerUp = () => {
-      isResizingLeftPanelRef.current = false;
-      document.body.classList.remove('is-panel-resizing');
-    };
-
-    window.addEventListener('mousemove', handlePointerMove);
-    window.addEventListener('mouseup', handlePointerUp);
-    return () => {
-      window.removeEventListener('mousemove', handlePointerMove);
-      window.removeEventListener('mouseup', handlePointerUp);
-    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   useEffect(() => {
@@ -1933,7 +1923,7 @@ function PlannerApp() {
     selectedNode ? 'selected' : activeScopeNode ? 'scope-group' : 'root';
 
   useEffect(() => {
-    if (!shouldFocusSelectedTitle || panelMode !== 'selected' || !selectedNode || isLeftPanelCollapsed) {
+    if (!shouldFocusSelectedTitle || panelMode !== 'selected' || !selectedNode) {
       return;
     }
 
@@ -1945,7 +1935,7 @@ function PlannerApp() {
     input.focus();
     input.select();
     setShouldFocusSelectedTitle(false);
-  }, [shouldFocusSelectedTitle, panelMode, selectedNode, isLeftPanelCollapsed]);
+  }, [shouldFocusSelectedTitle, panelMode, selectedNode]);
 
   useEffect(() => {
     if (!pendingCenteredNodeId) {
@@ -2701,7 +2691,12 @@ function PlannerApp() {
 
   const openStoredProject = useCallback(
     async (nextWorkspaceId: string, nextProjectId: string) => {
-      if (nextWorkspaceId === workspaceId && nextProjectId === projectId) return;
+      if (nextWorkspaceId === workspaceId && nextProjectId === projectId) {
+        setIsWorkspaceMenuOpen(false);
+        setIsProjectMenuOpen(false);
+        setIsLeftDrawerOpen(false);
+        return;
+      }
       setLoadingStoredProjectId(nextProjectId);
       setWorkspaceTreeError(null);
 
@@ -2710,20 +2705,28 @@ function PlannerApp() {
         const response = await fetchProjectGraph(nextWorkspaceId, nextProjectId);
         applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
         resetProjectUi();
+        setIsWorkspaceMenuOpen(false);
+        setIsProjectMenuOpen(false);
+        setIsLeftDrawerOpen(false);
         setFileFeedback(`Loaded ${sanitizeSnapshot(response.project as PlannerSnapshot).root.title} from the database.`);
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            fitCurrentGraph();
+          });
+        });
       } catch (error) {
         setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not load the selected project.');
       } finally {
         setLoadingStoredProjectId(null);
       }
     },
-    [applyServerProjectGraph, flushProjectGraphSync, projectId, resetProjectUi, workspaceId],
+    [applyServerProjectGraph, fitCurrentGraph, flushProjectGraphSync, projectId, resetProjectUi, workspaceId],
   );
 
   const selectWorkspace = useCallback(async (nextWorkspaceId: string) => {
     const workspace = workspaces.find((entry) => entry.workspaceId === nextWorkspaceId);
     if (!workspace) return;
-    setExpandedWorkspaceIds((current) => current.includes(nextWorkspaceId) ? current : [...current, nextWorkspaceId]);
+    setIsWorkspaceMenuOpen(false);
     const nextProject = workspace.projects[0];
     if (nextProject) {
       await openStoredProject(nextWorkspaceId, nextProject.projectId);
@@ -2741,7 +2744,7 @@ function PlannerApp() {
       const created = await createWorkspace({ name: name.trim() });
       await loadWorkspaceTree();
       showEmptyWorkspace(created.workspaceId);
-      setExpandedWorkspaceIds((current) => [...new Set([...current, created.workspaceId])]);
+      setIsWorkspaceMenuOpen(false);
     } catch (error) {
       setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not create the workspace.');
     }
@@ -2919,16 +2922,6 @@ function PlannerApp() {
     setInsertionEdgeId(null);
   }, [appendSessionJournal, snapshot]);
 
-  const tabTitle = useCallback(
-    (tab: TabDescriptor) => {
-      if (tab.kind === 'main') {
-        return snapshot.root.title;
-      }
-      return snapshot.nodes.find((node) => node.id === tab.id)?.title ?? 'Group';
-    },
-    [snapshot.nodes, snapshot.root.title],
-  );
-
   const panelGroupProgress = panelItem?.kind === 'group' ? countGroupProgress(snapshot.nodes, panelItem.id) : null;
   const panelTags = panelMode === 'root' ? snapshot.root.tags : panelItem?.tags ?? [];
   const normalizedTagQuery = normalizeTag(tagQuery);
@@ -3045,28 +3038,164 @@ function PlannerApp() {
           })),
         ];
 
-  const activeTabDescriptor = openTabs.find((tab) => tab.id === activeTabId) ?? mainTab;
-  const activeTabLabel = tabTitle(activeTabDescriptor);
   const activeWorkspace = workspaces.find((workspace) => workspace.workspaceId === workspaceId) ?? null;
 
   return (
     <>
       <div className="app-frame" style={{ '--properties-width': `${rightPanelWidth}px` } as CSSProperties}>
-        <header className="topbar">
-          <div className="topbar__brand">
-            <div className="topbar__brand-icon" aria-label="Project graph">
-              <Graph3Icon />
+        <aside className={['editor-sidebar', isLeftDrawerOpen ? 'is-open' : ''].join(' ')} aria-label="Project navigation">
+          <div className="editor-sidebar__primary">
+            <button
+              type="button"
+              className="new-node-button"
+              onClick={() => addTask()}
+              disabled={isProjectGraphLoading || !projectId}
+            >
+              <Plus aria-hidden="true" />
+              New Node
+            </button>
+          </div>
+
+          <div className="sidebar-section workspace-switcher">
+            <span className="sidebar-section__label">Workspace</span>
+            <button
+              type="button"
+              className="workspace-switcher__trigger"
+              onClick={() => {
+                setIsWorkspaceMenuOpen((current) => !current);
+                setIsProjectMenuOpen(false);
+              }}
+              aria-haspopup="menu"
+              aria-expanded={isWorkspaceMenuOpen}
+            >
+              <span>{activeWorkspace?.name ?? 'Select workspace'}</span>
+              <ChevronDown aria-hidden="true" />
+            </button>
+            {isWorkspaceMenuOpen ? (
+              <div className="sidebar-menu workspace-menu" role="menu" aria-label="Workspaces">
+                <div className="sidebar-menu__scroll">
+                  {workspaces.map((workspace) => (
+                    <button
+                      key={workspace.workspaceId}
+                      type="button"
+                      className={workspace.workspaceId === workspaceId ? 'is-active' : ''}
+                      onClick={() => void selectWorkspace(workspace.workspaceId)}
+                      role="menuitem"
+                    >
+                      <span>{workspace.name}</span>
+                      <small>{workspace.projectCount}</small>
+                    </button>
+                  ))}
+                </div>
+                <div className="sidebar-menu__actions">
+                  <button type="button" onClick={() => void createNewWorkspace()} role="menuitem">
+                    <Plus aria-hidden="true" /> Create workspace
+                  </button>
+                  {activeWorkspace ? (
+                    <>
+                      <button type="button" onClick={() => void renameWorkspace(activeWorkspace)} role="menuitem">
+                        <Pencil aria-hidden="true" /> Rename
+                      </button>
+                      <button type="button" className="is-danger" onClick={() => void removeWorkspace(activeWorkspace)} role="menuitem">
+                        <Trash2 aria-hidden="true" /> Delete
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            {workspaceTreeError ? <p className="sidebar-status is-error">{workspaceTreeError}</p> : null}
+            {isWorkspaceTreeLoading && workspaces.length === 0 ? <p className="sidebar-status">Loading workspaces...</p> : null}
+          </div>
+
+          <div className="sidebar-section projects-section">
+            <div className="sidebar-section__header">
+              <span className="sidebar-section__label">Projects</span>
+              <div className="sidebar-section__actions">
+                <button
+                  type="button"
+                  onClick={() => void createNewProject()}
+                  disabled={!workspaceId || isProjectGraphLoading}
+                  aria-label="Create project"
+                  title="Create project"
+                >
+                  <Plus aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsProjectMenuOpen((current) => !current);
+                    setIsWorkspaceMenuOpen(false);
+                  }}
+                  aria-label="Project file actions"
+                  title="Project file actions"
+                  aria-haspopup="menu"
+                  aria-expanded={isProjectMenuOpen}
+                >
+                  <MoreHorizontal aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+            {isProjectMenuOpen ? (
+              <div className="sidebar-menu project-actions-menu" role="menu" aria-label="Project file actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsProjectMenuOpen(false);
+                    fileInputRef.current?.click();
+                  }}
+                  disabled={!workspaceId}
+                  role="menuitem"
+                >
+                  <Upload aria-hidden="true" /> Import project
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsProjectMenuOpen(false);
+                    saveProject();
+                  }}
+                  disabled={!projectId}
+                  role="menuitem"
+                >
+                  <Download aria-hidden="true" /> Export project
+                </button>
+              </div>
+            ) : null}
+            <div className="projects-list" aria-label="Projects">
+              {activeWorkspace?.projects.map((project) => (
+                <div key={project.projectId} className={['project-row', project.projectId === projectId ? 'is-active' : ''].join(' ')}>
+                  <button
+                    type="button"
+                    className="project-row__label"
+                    onClick={() => void openStoredProject(activeWorkspace.workspaceId, project.projectId)}
+                    disabled={loadingStoredProjectId !== null}
+                    aria-current={project.projectId === projectId ? 'page' : undefined}
+                  >
+                    <span>{loadingStoredProjectId === project.projectId ? 'Loading...' : project.title || 'Untitled Project'}</span>
+                  </button>
+                  <div className="project-row__actions">
+                    <button type="button" onClick={() => void renameStoredProject(activeWorkspace.workspaceId, project.projectId, project.title)} aria-label={`Rename ${project.title}`} title="Rename project">
+                      <Pencil aria-hidden="true" />
+                    </button>
+                    <button type="button" onClick={() => void removeStoredProject(activeWorkspace.workspaceId, project.projectId, project.title)} aria-label={`Delete ${project.title}`} title="Delete project">
+                      <Trash2 aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {activeWorkspace && activeWorkspace.projects.length === 0 ? <p className="sidebar-empty">No projects yet</p> : null}
             </div>
           </div>
 
-          <div className="topbar__search-stack">
-            <label className="topbar__search" aria-label="Search project">
+          <div className="topbar__search-stack sidebar-search">
+            <label className="topbar__search" aria-label="Search nodes">
               <span className="topbar__search-icon" aria-hidden="true">
                 <ToolbarIcon name="search" />
               </span>
               <input
                 value={searchQuery}
-                placeholder="Search project or use #Tag.Path"
+                placeholder="Search nodes or use #Tag.Path"
                 onChange={(event) => setSearchQuery(event.target.value)}
                 disabled={!projectId}
               />
@@ -3087,6 +3216,9 @@ function PlannerApp() {
                         onClick={() => {
                           focusNodeInWorkspace(node);
                           setSearchQuery('');
+                          setIsWorkspaceMenuOpen(false);
+                          setIsProjectMenuOpen(false);
+                          setIsLeftDrawerOpen(false);
                         }}
                       >
                         <span className="search-result-item__title">{node.title}</span>
@@ -3108,50 +3240,72 @@ function PlannerApp() {
             ) : null}
           </div>
 
-          <nav className="topbar__nav" aria-label="Project views">
-            <div className={['topbar__tab', activeTabId === 'main' ? 'is-active' : ''].join(' ')}>
-              <button
-                type="button"
-                className="topbar__tab-button"
-                onClick={() => setActiveTabId('main')}
-                aria-current={activeTabId === 'main' ? 'page' : undefined}
-              >
-                {projectId ? snapshot.root.title || 'Untitled Project' : activeWorkspace?.name || 'No project'}
-              </button>
+          <div className="sidebar-section available-tasks-section">
+            <div className="sidebar-section__header">
+              <span className="sidebar-section__label">Available Tasks</span>
+              <span className="sidebar-section__count">{availableTasks.length}</span>
             </div>
-          </nav>
+            <div className="available-task-list">
+              {projectId && availableTasks.length === 0 ? (
+                <p className="sidebar-empty">No tasks are currently available.</p>
+              ) : !projectId ? (
+                <p className="sidebar-empty">Select a project to see available tasks.</p>
+              ) : (
+                availableTasks.map((task) => (
+                  <div key={task.id} className="available-task-row">
+                    <button
+                      type="button"
+                      className="available-task-row__focus"
+                      onClick={() => {
+                        focusNodeInWorkspace(task);
+                        setIsLeftDrawerOpen(false);
+                      }}
+                    >
+                      <span>{task.title}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="available-task-row__check"
+                      onClick={() => toggleTaskStatus(task.id)}
+                      aria-label={`Mark ${task.title} complete`}
+                      title="Mark complete"
+                    >
+                      <Check aria-hidden="true" />
+                    </button>
+                    <span className="available-task-row__status" title="Available" aria-label="Available" />
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
 
-          <div className="topbar__actions">
-            <button type="button" className="primary-action" onClick={() => addTask()} disabled={isProjectGraphLoading || !projectId}>
-              New Node
-            </button>
-            <button type="button" className="secondary" onClick={() => void createNewProject()} disabled={isProjectGraphLoading || !workspaceId}>
-              New Project
-            </button>
+          <div className="editor-sidebar__footer">
             <button
               type="button"
-              className="secondary"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isProjectGraphLoading || !workspaceId}
-              aria-label="Import project file"
-              title="Import project file"
-            >
-              Import
-            </button>
-            <button type="button" className="secondary" onClick={saveProject} disabled={isProjectGraphLoading || !projectId}>
-              Export
-            </button>
-            <button
-              type="button"
-              className={['secondary', isSettingsOpen ? 'is-active' : ''].join(' ')}
-              onClick={() => setIsSettingsOpen((current) => !current)}
+              className="sidebar-settings-button"
+              onClick={() => setIsSettingsOpen(true)}
               aria-label="Open settings"
-              title="Settings"
             >
+              <Settings aria-hidden="true" />
               Settings
             </button>
           </div>
-        </header>
+
+        </aside>
+
+        {isLeftDrawerOpen || isRightDrawerOpen ? (
+          <button
+            type="button"
+            className="editor-drawer-scrim"
+            onClick={() => {
+              setIsWorkspaceMenuOpen(false);
+              setIsProjectMenuOpen(false);
+              setIsLeftDrawerOpen(false);
+              setIsRightDrawerOpen(false);
+            }}
+            aria-label="Close editor panel"
+          />
+        ) : null}
 
         <div className="app-shell app-shell--floating">
           <input
@@ -3169,127 +3323,33 @@ function PlannerApp() {
               </p>
             ) : null}
 
-            <aside className="floating-available-panel workspace-tree-panel" aria-label="Workspaces and available work">
-              <div className="workspace-tree__header">
-                <div>
-                  <span className="workspace-tree__eyebrow">Portfolio</span>
-                  <h2>Workspaces</h2>
-                </div>
-                <button
-                  type="button"
-                  className="icon-button secondary"
-                  onClick={() => void createNewWorkspace()}
-                  aria-label="Create workspace"
-                  title="Create workspace"
-                >
-                  <Plus aria-hidden="true" />
-                </button>
-              </div>
-
-              {workspaceTreeError ? <p className="feedback feedback--error workspace-tree__feedback">{workspaceTreeError}</p> : null}
-              {isWorkspaceTreeLoading && workspaces.length === 0 ? <p className="muted workspace-tree__feedback">Loading workspaces...</p> : null}
-
-              <div className="workspace-tree" aria-label="Workspace project tree">
-                {workspaces.map((workspace) => {
-                  const isExpanded = expandedWorkspaceIds.includes(workspace.workspaceId);
-                  const isActiveWorkspace = workspace.workspaceId === workspaceId;
-                  return (
-                    <div key={workspace.workspaceId} className="workspace-tree__workspace">
-                      <div className={['workspace-tree__row', isActiveWorkspace ? 'is-active' : ''].join(' ')}>
-                        <button
-                          type="button"
-                          className="workspace-tree__toggle"
-                          onClick={() => setExpandedWorkspaceIds((current) =>
-                            current.includes(workspace.workspaceId)
-                              ? current.filter((id) => id !== workspace.workspaceId)
-                              : [...current, workspace.workspaceId])}
-                          aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${workspace.name}`}
-                        >
-                          {isExpanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
-                        </button>
-                        <button type="button" className="workspace-tree__label" onClick={() => void selectWorkspace(workspace.workspaceId)}>
-                          <span>{workspace.name}</span>
-                          <small>{workspace.projectCount}</small>
-                        </button>
-                        <div className="workspace-tree__actions">
-                          <button type="button" onClick={() => void renameWorkspace(workspace)} aria-label={`Rename ${workspace.name}`} title="Rename workspace">
-                            <Pencil aria-hidden="true" />
-                          </button>
-                          <button type="button" onClick={() => void removeWorkspace(workspace)} aria-label={`Delete ${workspace.name}`} title="Delete workspace">
-                            <Trash2 aria-hidden="true" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {isExpanded ? (
-                        <div className="workspace-tree__projects">
-                          {workspace.projects.map((project) => (
-                            <div key={project.projectId} className={['workspace-tree__project', project.projectId === projectId ? 'is-active' : ''].join(' ')}>
-                              <button
-                                type="button"
-                                className="workspace-tree__project-label"
-                                onClick={() => void openStoredProject(workspace.workspaceId, project.projectId)}
-                                disabled={loadingStoredProjectId !== null}
-                              >
-                                <span>{loadingStoredProjectId === project.projectId ? 'Loading...' : project.title || 'Untitled Project'}</span>
-                                <small>{project.nodeCount}</small>
-                              </button>
-                              <div className="workspace-tree__actions">
-                                <button type="button" onClick={() => void renameStoredProject(workspace.workspaceId, project.projectId, project.title)} aria-label={`Rename ${project.title}`} title="Rename project">
-                                  <Pencil aria-hidden="true" />
-                                </button>
-                                <button type="button" onClick={() => void removeStoredProject(workspace.workspaceId, project.projectId, project.title)} aria-label={`Delete ${project.title}`} title="Delete project">
-                                  <Trash2 aria-hidden="true" />
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                          {workspace.projects.length === 0 ? <p className="muted workspace-tree__empty">No projects yet</p> : null}
-                          {isActiveWorkspace ? (
-                            <button type="button" className="workspace-tree__add-project" onClick={() => void createNewProject()}>
-                              <Plus aria-hidden="true" />
-                              <span>New project</span>
-                            </button>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="available-work-section">
-                <button
-                  type="button"
-                  className="panel-header floating-panel-header available-work-section__toggle"
-                  onClick={() => setIsAvailableWorkExpanded((current) => !current)}
-                  aria-expanded={isAvailableWorkExpanded}
-                >
-                  <span className="available-work-section__title">
-                    {isAvailableWorkExpanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
-                    Available Work
-                  </span>
-                  <span>{availableTasks.length}</span>
-                </button>
-                {isAvailableWorkExpanded ? (
-                  <div className="floating-task-list">
-                    {projectId && availableTasks.length === 0 ? (
-                      <p className="muted">No tasks are available yet. Complete a blocker to unlock the next path.</p>
-                    ) : !projectId ? (
-                      <p className="muted">Create or select a project to see available work.</p>
-                    ) : (
-                      availableTasks.map((task) => (
-                        <button key={task.id} className="floating-task-card" onClick={() => focusNodeInWorkspace(task)}>
-                          <span>{task.title}</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                ) : null}
-              </div>
-            </aside>
+            <div className="mobile-editor-controls" aria-label="Editor panels">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsLeftDrawerOpen(true);
+                  setIsRightDrawerOpen(false);
+                }}
+                aria-label="Open project navigation"
+                aria-expanded={isLeftDrawerOpen}
+              >
+                <Menu aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRightDrawerOpen(true);
+                  setIsLeftDrawerOpen(false);
+                }}
+                aria-label="Open inspector"
+                aria-expanded={isRightDrawerOpen}
+              >
+                <PanelRight aria-hidden="true" />
+              </button>
+            </div>
 
             <main
+                ref={canvasShellRef}
                 className="canvas-shell"
                 onMouseDownCapture={(event) => {
                   const target = event.target as HTMLElement;
@@ -3342,7 +3402,7 @@ function PlannerApp() {
                     <button
                       type="button"
                       className="canvas-glass-button"
-                      onClick={() => void fitView({ duration: 350, padding: 0.18 })}
+                      onClick={() => fitCurrentGraph(350)}
                     >
                       Fit View
                     </button>
@@ -3470,17 +3530,26 @@ function PlannerApp() {
                 </ReactFlow>
               </main>
 
-              <aside className="floating-properties-panel floating-properties-panel--resizable" style={{ width: leftPanelWidth }}>
+              <aside className={['editor-inspector', isRightDrawerOpen ? 'is-open' : ''].join(' ')} aria-label="Node inspector">
                   <button
                     type="button"
-                    className="panel-resizer panel-resizer--left"
+                    className="panel-resizer editor-inspector__resizer"
                     onMouseDown={() => {
-                      isResizingLeftPanelRef.current = true;
+                      isResizingPanelRef.current = true;
                       document.body.classList.add('is-panel-resizing');
                     }}
                     aria-label="Resize node information panel"
                   />
-                  <div className="glass-panel glass-panel--stack">
+                  <div className="editor-inspector__header">
+                    <div>
+                      <span>Inspector</span>
+                      <strong>{panelMode === 'root' ? snapshot.root.title || 'Project' : panelItem?.title || 'No selection'}</strong>
+                    </div>
+                    <button type="button" onClick={() => setIsRightDrawerOpen(false)} aria-label="Close inspector">
+                      <X aria-hidden="true" />
+                    </button>
+                  </div>
+                  <div className="editor-inspector__content">
                     {panelMode === 'root' ? (
                       <>
                         <label className="glass-field">
