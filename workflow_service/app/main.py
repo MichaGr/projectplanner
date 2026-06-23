@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -24,10 +24,35 @@ class Base(DeclarativeBase):
     pass
 
 
+class WorkspaceModel(Base):
+    __tablename__ = "workspaces"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    projects: Mapped[list["ProjectModel"]] = relationship(
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
 class ProjectModel(Base):
     __tablename__ = "projects"
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(Text, default="")
     description: Mapped[str] = mapped_column(Text, default="")
     completion_criteria: Mapped[str] = mapped_column(Text, default="")
@@ -40,8 +65,17 @@ class ProjectModel(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
-    nodes: Mapped[list["NodeModel"]] = relationship(back_populates="project", cascade="all, delete-orphan")
-    edges: Mapped[list["EdgeModel"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    workspace: Mapped[WorkspaceModel] = relationship(back_populates="projects")
+    nodes: Mapped[list["NodeModel"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    edges: Mapped[list["EdgeModel"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class NodeModel(Base):
@@ -133,8 +167,17 @@ class PlannerSnapshotPayload(BaseModel):
     edges: list[EdgePayload]
 
 
+class CreateWorkspaceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str = ""
+
+
+class UpdateWorkspaceRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+
+
 class CreateProjectRequest(BaseModel):
-    projectId: str
     title: str | None = None
     project: PlannerSnapshotPayload | None = None
 
@@ -181,11 +224,13 @@ class OperationsRequest(BaseModel):
 
 
 class ProjectGraphResponse(BaseModel):
+    workspaceId: str
     projectId: str
     project: PlannerSnapshotPayload
 
 
 class ProjectListItem(BaseModel):
+    workspaceId: str
     projectId: str
     title: str
     description: str
@@ -193,6 +238,25 @@ class ProjectListItem(BaseModel):
     nodeCount: int
     edgeCount: int
     updatedAt: str
+
+
+class WorkspaceListItem(BaseModel):
+    workspaceId: str
+    name: str
+    description: str
+    projectCount: int
+    createdAt: str
+    updatedAt: str
+    projects: list[ProjectListItem]
+
+
+class DeleteWorkspaceResponse(BaseModel):
+    deletedWorkspaceId: str
+    replacementWorkspaceId: str
+
+
+class DeleteProjectResponse(BaseModel):
+    deletedProjectId: str
 
 
 def serialize_project(project: ProjectModel) -> PlannerSnapshotPayload:
@@ -228,8 +292,53 @@ def serialize_project(project: ProjectModel) -> PlannerSnapshotPayload:
     )
 
 
-def ensure_project(session: Session, project_id: str) -> ProjectModel:
-    project = session.get(ProjectModel, project_id)
+def serialize_project_list_item(project: ProjectModel) -> ProjectListItem:
+    return ProjectListItem(
+        workspaceId=project.workspace_id,
+        projectId=project.id,
+        title=project.title,
+        description=project.description,
+        graphVersion=project.graph_version,
+        nodeCount=len(project.nodes),
+        edgeCount=len(project.edges),
+        updatedAt=project.updated_at.isoformat(),
+    )
+
+
+def serialize_workspace(workspace: WorkspaceModel) -> WorkspaceListItem:
+    projects = sorted(workspace.projects, key=lambda project: project.updated_at, reverse=True)
+    return WorkspaceListItem(
+        workspaceId=workspace.id,
+        name=workspace.name,
+        description=workspace.description,
+        projectCount=len(projects),
+        createdAt=workspace.created_at.isoformat(),
+        updatedAt=workspace.updated_at.isoformat(),
+        projects=[serialize_project_list_item(project) for project in projects],
+    )
+
+
+def create_default_workspace(session: Session) -> WorkspaceModel:
+    workspace = WorkspaceModel(id=str(uuid4()), name="Default Workspace", description="")
+    session.add(workspace)
+    session.flush()
+    return workspace
+
+
+def ensure_workspace(session: Session, workspace_id: str) -> WorkspaceModel:
+    workspace = session.get(WorkspaceModel, workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    return workspace
+
+
+def ensure_project(session: Session, workspace_id: str, project_id: str) -> ProjectModel:
+    project = session.scalar(
+        select(ProjectModel).where(
+            ProjectModel.id == project_id,
+            ProjectModel.workspace_id == workspace_id,
+        )
+    )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     return project
@@ -411,13 +520,7 @@ def apply_operations(session: Session, project: ProjectModel, operations: list[G
     replace_graph(session, project, snapshot)
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    yield
-
-
-app = FastAPI(title="Project Planner Workflow Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Project Planner Workflow Service", version="0.2.0")
 
 
 @app.get("/api/health")
@@ -426,57 +529,127 @@ def health(session: Session = Depends(get_session)):
     return {"status": "ok"}
 
 
-@app.post("/api/projects", response_model=ProjectGraphResponse)
-def create_project(payload: CreateProjectRequest, session: Session = Depends(get_session)):
-    existing = session.get(ProjectModel, payload.projectId)
-    if existing:
-        return ProjectGraphResponse(projectId=existing.id, project=serialize_project(existing))
+@app.get("/api/workspaces", response_model=list[WorkspaceListItem])
+def list_workspaces(session: Session = Depends(get_session)):
+    workspaces = session.scalars(select(WorkspaceModel).order_by(WorkspaceModel.updated_at.desc())).all()
+    return [serialize_workspace(workspace) for workspace in workspaces]
 
-    snapshot = payload.project or PlannerSnapshotPayload(root=RootPayload(title=payload.title or ""), nodes=[], edges=[])
+
+@app.post("/api/workspaces", response_model=WorkspaceListItem, status_code=201)
+def create_workspace(payload: CreateWorkspaceRequest, session: Session = Depends(get_session)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Workspace name cannot be blank.")
+    workspace = WorkspaceModel(id=str(uuid4()), name=name, description=payload.description.strip())
+    session.add(workspace)
+    session.commit()
+    session.refresh(workspace)
+    return serialize_workspace(workspace)
+
+
+@app.get("/api/workspaces/{workspace_id}", response_model=WorkspaceListItem)
+def get_workspace(workspace_id: str, session: Session = Depends(get_session)):
+    return serialize_workspace(ensure_workspace(session, workspace_id))
+
+
+@app.patch("/api/workspaces/{workspace_id}", response_model=WorkspaceListItem)
+def update_workspace(
+    workspace_id: str,
+    payload: UpdateWorkspaceRequest,
+    session: Session = Depends(get_session),
+):
+    workspace = ensure_workspace(session, workspace_id)
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Workspace name cannot be blank.")
+        workspace.name = name
+    if payload.description is not None:
+        workspace.description = payload.description.strip()
+    workspace.updated_at = utc_now()
+    session.commit()
+    session.refresh(workspace)
+    return serialize_workspace(workspace)
+
+
+@app.delete("/api/workspaces/{workspace_id}", response_model=DeleteWorkspaceResponse)
+def delete_workspace(workspace_id: str, session: Session = Depends(get_session)):
+    workspace = ensure_workspace(session, workspace_id)
+    remaining = session.scalars(
+        select(WorkspaceModel)
+        .where(WorkspaceModel.id != workspace_id)
+        .order_by(WorkspaceModel.updated_at.desc())
+    ).all()
+    session.delete(workspace)
+    session.flush()
+    replacement = remaining[0] if remaining else create_default_workspace(session)
+    session.commit()
+    return DeleteWorkspaceResponse(
+        deletedWorkspaceId=workspace_id,
+        replacementWorkspaceId=replacement.id,
+    )
+
+
+@app.get("/api/workspaces/{workspace_id}/projects", response_model=list[ProjectListItem])
+def list_projects(workspace_id: str, session: Session = Depends(get_session)):
+    ensure_workspace(session, workspace_id)
+    projects = session.scalars(
+        select(ProjectModel)
+        .where(ProjectModel.workspace_id == workspace_id)
+        .order_by(ProjectModel.updated_at.desc())
+    ).all()
+    return [serialize_project_list_item(project) for project in projects]
+
+
+@app.post("/api/workspaces/{workspace_id}/projects", response_model=ProjectGraphResponse, status_code=201)
+def create_project(
+    workspace_id: str,
+    payload: CreateProjectRequest,
+    session: Session = Depends(get_session),
+):
+    workspace = ensure_workspace(session, workspace_id)
+
+    title = (payload.title or "Untitled Project").strip() or "Untitled Project"
+    snapshot = payload.project or PlannerSnapshotPayload(root=RootPayload(title=title), nodes=[], edges=[])
     validate_snapshot(snapshot)
 
     project = ProjectModel(
-        id=payload.projectId,
-        title=snapshot.root.title or (payload.title or ""),
+        id=str(uuid4()),
+        workspace_id=workspace.id,
+        title=snapshot.root.title or title,
         description=snapshot.root.description,
         completion_criteria=snapshot.root.completionCriteria,
         tags=list(snapshot.root.tags),
         graph_version=1,
     )
+    workspace.updated_at = utc_now()
     session.add(project)
     session.flush()
     replace_graph(session, project, snapshot)
     session.commit()
     session.refresh(project)
-    return ProjectGraphResponse(projectId=project.id, project=serialize_project(project))
+    return ProjectGraphResponse(workspaceId=workspace.id, projectId=project.id, project=serialize_project(project))
 
 
-@app.get("/api/projects", response_model=list[ProjectListItem])
-def list_projects(session: Session = Depends(get_session)):
-    projects = session.scalars(select(ProjectModel).order_by(ProjectModel.updated_at.desc())).all()
-    return [
-        ProjectListItem(
-            projectId=project.id,
-            title=project.title,
-            description=project.description,
-            graphVersion=project.graph_version,
-            nodeCount=len(project.nodes),
-            edgeCount=len(project.edges),
-            updatedAt=project.updated_at.isoformat(),
-        )
-        for project in projects
-    ]
+@app.get("/api/workspaces/{workspace_id}/projects/{project_id}", response_model=ProjectListItem)
+def get_project(workspace_id: str, project_id: str, session: Session = Depends(get_session)):
+    return serialize_project_list_item(ensure_project(session, workspace_id, project_id))
 
 
-@app.get("/api/projects/{project_id}/graph", response_model=ProjectGraphResponse)
-def get_project_graph(project_id: str, session: Session = Depends(get_session)):
-    project = ensure_project(session, project_id)
-    return ProjectGraphResponse(projectId=project.id, project=serialize_project(project))
+@app.get("/api/workspaces/{workspace_id}/projects/{project_id}/graph", response_model=ProjectGraphResponse)
+def get_project_graph(workspace_id: str, project_id: str, session: Session = Depends(get_session)):
+    project = ensure_project(session, workspace_id, project_id)
+    return ProjectGraphResponse(workspaceId=workspace_id, projectId=project.id, project=serialize_project(project))
 
 
-@app.patch("/api/projects/{project_id}", response_model=ProjectGraphResponse)
-def update_project(project_id: str, payload: UpdateProjectRequest, session: Session = Depends(get_session)):
-    project = ensure_project(session, project_id)
+@app.patch("/api/workspaces/{workspace_id}/projects/{project_id}", response_model=ProjectGraphResponse)
+def update_project(
+    workspace_id: str,
+    project_id: str,
+    payload: UpdateProjectRequest,
+    session: Session = Depends(get_session),
+):
+    project = ensure_project(session, workspace_id, project_id)
     if payload.title is not None:
         project.title = payload.title
     if payload.description is not None:
@@ -487,20 +660,40 @@ def update_project(project_id: str, payload: UpdateProjectRequest, session: Sess
         project.tags = list(payload.tags)
     project.graph_version += 1
     project.updated_at = utc_now()
+    project.workspace.updated_at = project.updated_at
     session.commit()
     session.refresh(project)
-    return ProjectGraphResponse(projectId=project.id, project=serialize_project(project))
+    return ProjectGraphResponse(workspaceId=workspace_id, projectId=project.id, project=serialize_project(project))
 
 
-@app.post("/api/projects/{project_id}/operations", response_model=ProjectGraphResponse)
-def apply_project_operations(project_id: str, payload: OperationsRequest, session: Session = Depends(get_session)):
-    project = ensure_project(session, project_id)
+@app.delete("/api/workspaces/{workspace_id}/projects/{project_id}", response_model=DeleteProjectResponse)
+def delete_project(workspace_id: str, project_id: str, session: Session = Depends(get_session)):
+    project = ensure_project(session, workspace_id, project_id)
+    workspace = project.workspace
+    session.delete(project)
+    workspace.updated_at = utc_now()
+    session.commit()
+    return DeleteProjectResponse(deletedProjectId=project_id)
+
+
+@app.post(
+    "/api/workspaces/{workspace_id}/projects/{project_id}/operations",
+    response_model=ProjectGraphResponse,
+)
+def apply_project_operations(
+    workspace_id: str,
+    project_id: str,
+    payload: OperationsRequest,
+    session: Session = Depends(get_session),
+):
+    project = ensure_project(session, workspace_id, project_id)
     try:
         apply_operations(session, project, payload.operations)
+        project.workspace.updated_at = utc_now()
         session.commit()
     except IntegrityError as error:
         session.rollback()
         raise HTTPException(status_code=400, detail="Duplicate edge or invalid graph mutation.") from error
 
     session.refresh(project)
-    return ProjectGraphResponse(projectId=project.id, project=serialize_project(project))
+    return ProjectGraphResponse(workspaceId=workspace_id, projectId=project.id, project=serialize_project(project))

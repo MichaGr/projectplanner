@@ -19,22 +19,33 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
-  ApiError,
   applyProjectGraphOperations,
   checkWorkflowService,
+  createWorkspace,
   createProjectGraph,
+  deleteProject,
+  deleteWorkspace,
   fetchProjectGraph,
-  listStoredProjects,
-  StoredProjectSummary,
+  listWorkspaces,
+  updateProject,
+  updateWorkspace,
+  WorkspaceSummary,
 } from './api';
-import addIconSvg from '../material-design-icons-4.0.0/src/content/add/materialicons/24px.svg?raw';
-import searchIconSvg from '../material-design-icons-4.0.0/src/action/search/materialicons/24px.svg?raw';
-import openInNewIconSvg from '../material-design-icons-4.0.0/src/action/open_in_new/materialicons/24px.svg?raw';
-import warningIconSvg from '../material-design-icons-4.0.0/src/alert/warning/materialicons/24px.svg?raw';
-import deviceHubIconSvg from '../material-design-icons-4.0.0/src/hardware/device_hub/materialicons/24px.svg?raw';
-import accountTreeIconSvg from '../material-design-icons-4.0.0/src/notification/account_tree/materialiconsoutlined/24px.svg?raw';
-import checkIconSvg from '../material-design-icons-4.0.0/src/navigation/check/materialicons/24px.svg?raw';
-import closeIconSvg from '../material-design-icons-4.0.0/src/navigation/close/materialicons/24px.svg?raw';
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  GitFork,
+  Network,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  TriangleAlert,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
 
 type PlannerNodeKind = 'task' | 'group';
 type TaskStatus = 'todo' | 'done';
@@ -78,7 +89,8 @@ type TabDescriptor =
   | { id: string; kind: 'group' };
 
 type ProjectFileV1 = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
+  workspaceId?: string;
   projectId?: string;
   project: PlannerSnapshot;
   ui: {
@@ -454,7 +466,6 @@ const blankSnapshot = (): PlannerSnapshot => ({
 });
 
 const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
-const createProjectId = () => `project-${Math.random().toString(36).slice(2, 10)}`;
 const serializeSnapshot = (snapshot: PlannerSnapshot) => JSON.stringify(snapshot);
 const slugify = (value: string) =>
   value
@@ -546,19 +557,31 @@ const getStoredSnapshot = (): PlannerSnapshot => {
 
 const getStoredProjectId = (): string => {
   if (typeof window === 'undefined') {
-    return createProjectId();
+    return '';
   }
 
   const raw = window.localStorage.getItem(STORAGE_KEY);
   if (!raw) {
-    return createProjectId();
+    return '';
   }
 
   try {
     const parsed = JSON.parse(raw) as Partial<ProjectFileV1>;
-    return typeof parsed.projectId === 'string' && parsed.projectId ? parsed.projectId : createProjectId();
+    return typeof parsed.projectId === 'string' ? parsed.projectId : '';
   } catch {
-    return createProjectId();
+    return '';
+  }
+};
+
+const getStoredWorkspaceId = (): string => {
+  if (typeof window === 'undefined') return '';
+  const raw = window.localStorage.getItem(STORAGE_KEY);
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(raw) as Partial<ProjectFileV1>;
+    return typeof parsed.workspaceId === 'string' ? parsed.workspaceId : '';
+  } catch {
+    return '';
   }
 };
 
@@ -582,7 +605,7 @@ const sanitizeProjectFile = (raw: ProjectFileV1): ProjectFileV1 => {
 
   return {
     version: 2,
-    projectId: raw.projectId || createProjectId(),
+    projectId: raw.projectId || '',
     project,
     ui: {
       openTabs,
@@ -605,7 +628,7 @@ const normalizeImportedProjectFile = (raw: ImportableProjectFile): ProjectFileV1
   if (isPlannerSnapshot(raw)) {
     return sanitizeProjectFile({
       version: 2,
-      projectId: createProjectId(),
+      projectId: '',
       project: raw,
       ui: {
         openTabs: [mainTab],
@@ -619,7 +642,7 @@ const normalizeImportedProjectFile = (raw: ImportableProjectFile): ProjectFileV1
     const maybeProjectFile = raw as Partial<ProjectFileV1>;
     return sanitizeProjectFile({
       version: maybeProjectFile.version === 1 || maybeProjectFile.version === 2 ? maybeProjectFile.version : 2,
-      projectId: typeof raw.projectId === 'string' ? raw.projectId : createProjectId(),
+      projectId: typeof raw.projectId === 'string' ? raw.projectId : '',
       project: raw.project,
       ui: {
         openTabs: maybeProjectFile.ui?.openTabs ?? [mainTab],
@@ -647,6 +670,19 @@ const serializeProjectFile = (
     activeTabId,
     selectedNodeId,
   },
+});
+
+const serializeStoredState = (
+  workspaceId: string,
+  projectId: string,
+  snapshot: PlannerSnapshot,
+  openTabs: TabDescriptor[],
+  activeTabId: string,
+  selectedNodeId: string | null,
+): ProjectFileV1 => ({
+  ...serializeProjectFile(projectId, snapshot, openTabs, activeTabId, selectedNodeId),
+  version: 3,
+  workspaceId,
 });
 
 const fileNameFromTitle = (title: string) =>
@@ -1269,23 +1305,23 @@ const nextAvailableOffset = (nodes: PlannerNodeRecord[], parentId?: string) => {
   };
 };
 
-const materialIconSvgs = {
-  add: addIconSvg,
-  check: checkIconSvg,
-  close: closeIconSvg,
-  device_hub: deviceHubIconSvg,
-  open_in_new: openInNewIconSvg,
-  search: searchIconSvg,
-  warning: warningIconSvg,
+const toolbarIcons = {
+  check: Check,
+  close: X,
+  device_hub: GitFork,
+  open_in_new: ExternalLink,
+  search: Search,
+  warning: TriangleAlert,
 } as const;
 
-type MaterialIconName = keyof typeof materialIconSvgs;
+type ToolbarIconName = keyof typeof toolbarIcons;
 
-const ToolbarIcon = ({ name }: { name: MaterialIconName }) => (
-  <span className="app-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: materialIconSvgs[name] }} />
-);
+const ToolbarIcon = ({ name }: { name: ToolbarIconName }) => {
+  const Icon: LucideIcon = toolbarIcons[name];
+  return <Icon className="app-icon" aria-hidden="true" />;
+};
 
-const Graph3Icon = () => <span className="app-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: accountTreeIconSvg }} />;
+const Graph3Icon = () => <Network className="app-icon" aria-hidden="true" />;
 
 const NodeActions = ({ data }: { data: RenderNodeData }) => (
   <div className="node-actions nodrag nopan">
@@ -1473,6 +1509,7 @@ function PlannerApp() {
   const { screenToFlowPosition, setCenter, getZoom, fitView, getViewport } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const [workspaceId, setWorkspaceId] = useState<string>(() => getStoredWorkspaceId());
   const [projectId, setProjectId] = useState<string>(() => getStoredProjectId());
   const [snapshot, setSnapshot] = useState<PlannerSnapshot>(() => getStoredSnapshot());
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredTheme());
@@ -1491,11 +1528,12 @@ function PlannerApp() {
   const [insertionEdgeId, setInsertionEdgeId] = useState<string | null>(null);
   const [pendingCenteredNodeId, setPendingCenteredNodeId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isProjectLibraryOpen, setIsProjectLibraryOpen] = useState(false);
-  const [storedProjects, setStoredProjects] = useState<StoredProjectSummary[]>([]);
-  const [isStoredProjectsLoading, setIsStoredProjectsLoading] = useState(false);
-  const [storedProjectsError, setStoredProjectsError] = useState<string | null>(null);
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
+  const [isWorkspaceTreeLoading, setIsWorkspaceTreeLoading] = useState(false);
+  const [workspaceTreeError, setWorkspaceTreeError] = useState<string | null>(null);
   const [loadingStoredProjectId, setLoadingStoredProjectId] = useState<string | null>(null);
+  const [isAvailableWorkExpanded, setIsAvailableWorkExpanded] = useState(true);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking');
   const [sessionJournal, setSessionJournal] = useState<SessionJournalEntry[]>([]);
   const [rightPanelWidth, setRightPanelWidth] = useState(() => getStoredRightPanelWidth());
@@ -1509,6 +1547,7 @@ function PlannerApp() {
   const isResizingLeftPanelRef = useRef(false);
   const canvasNodesRef = useRef<PlannerFlowNode[]>([]);
   const snapshotRef = useRef(snapshot);
+  const workspaceIdRef = useRef(workspaceId);
   const projectIdRef = useRef(projectId);
   const isInspectorEditingRef = useRef(false);
   const isApplyingServerSnapshotRef = useRef(false);
@@ -1534,9 +1573,9 @@ function PlannerApp() {
   useEffect(() => {
     window.localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify(serializeProjectFile(projectId, snapshot, openTabs, activeTabId, selectedNodeId)),
+      JSON.stringify(serializeStoredState(workspaceId, projectId, snapshot, openTabs, activeTabId, selectedNodeId)),
     );
-  }, [projectId, snapshot, openTabs, activeTabId, selectedNodeId]);
+  }, [workspaceId, projectId, snapshot, openTabs, activeTabId, selectedNodeId]);
 
   useEffect(() => {
     window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
@@ -1556,43 +1595,54 @@ function PlannerApp() {
   }, [snapshot]);
 
   useEffect(() => {
+    workspaceIdRef.current = workspaceId;
+  }, [workspaceId]);
+
+  useEffect(() => {
     projectIdRef.current = projectId;
   }, [projectId]);
 
-  const applyServerProjectGraph = useCallback((nextProjectId: string, nextSnapshot: PlannerSnapshot) => {
+  const applyServerProjectGraph = useCallback((nextWorkspaceId: string, nextProjectId: string, nextSnapshot: PlannerSnapshot) => {
     const normalizedSnapshot = sanitizeSnapshot(nextSnapshot);
     isApplyingServerSnapshotRef.current = true;
     lastSyncedSnapshotRef.current = serializeSnapshot(normalizedSnapshot);
+    setWorkspaceId(nextWorkspaceId);
     setProjectId(nextProjectId);
     setSnapshot(normalizedSnapshot);
     setGraphSyncError(null);
   }, []);
 
-  const loadStoredProjects = useCallback(async () => {
-    setIsStoredProjectsLoading(true);
-    setStoredProjectsError(null);
+  const loadWorkspaceTree = useCallback(async () => {
+    setIsWorkspaceTreeLoading(true);
+    setWorkspaceTreeError(null);
 
     try {
-      const projects = await listStoredProjects();
-      setStoredProjects(projects);
+      const nextWorkspaces = await listWorkspaces();
+      setWorkspaces(nextWorkspaces);
+      setExpandedWorkspaceIds((current) => [
+        ...new Set([...current, ...nextWorkspaces.map((workspace) => workspace.workspaceId)]),
+      ]);
+      return nextWorkspaces;
     } catch (error) {
-      setStoredProjectsError(error instanceof Error ? error.message : 'Could not load saved projects.');
+      setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not load workspaces.');
+      throw error;
     } finally {
-      setIsStoredProjectsLoading(false);
+      setIsWorkspaceTreeLoading(false);
     }
   }, []);
 
   const persistSnapshotToServer = useCallback(
     async (nextSnapshot?: PlannerSnapshot) => {
+      if (!workspaceIdRef.current || !projectIdRef.current) return;
       const snapshotToPersist = sanitizeSnapshot(nextSnapshot ?? snapshotRef.current);
-      const response = await applyProjectGraphOperations(projectIdRef.current, [
+      const response = await applyProjectGraphOperations(workspaceIdRef.current, projectIdRef.current, [
         {
           type: 'replace_graph',
           project: snapshotToPersist,
         },
       ]);
 
-      applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
+      applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
       setFileFeedback(null);
     },
     [applyServerProjectGraph],
@@ -1600,7 +1650,7 @@ function PlannerApp() {
 
   const flushProjectGraphSync = useCallback(async () => {
     const nextSerialized = serializeSnapshot(snapshotRef.current);
-    if (!hasHydratedProjectRef.current || nextSerialized === lastSyncedSnapshotRef.current) {
+    if (!workspaceIdRef.current || !projectIdRef.current || !hasHydratedProjectRef.current || nextSerialized === lastSyncedSnapshotRef.current) {
       return;
     }
 
@@ -1635,25 +1685,39 @@ function PlannerApp() {
     try {
       await checkWorkflowService();
       setBackendStatus('online');
-      const response = await fetchProjectGraph(projectIdRef.current);
-      applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) {
-        const response = await createProjectGraph({
-          projectId: projectIdRef.current,
-          project: snapshotRef.current,
-        });
-        applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
-        setBackendStatus('online');
-      } else {
-        setBackendStatus('offline');
-        setGraphSyncError(error instanceof Error ? error.message : 'Could not load the workflow from the backend.');
+      const nextWorkspaces = await loadWorkspaceTree();
+      const selectedWorkspace =
+        nextWorkspaces.find((workspace) => workspace.workspaceId === workspaceIdRef.current) ??
+        nextWorkspaces.find((workspace) => workspace.projects.some((project) => project.projectId === projectIdRef.current)) ??
+        nextWorkspaces[0];
+
+      if (!selectedWorkspace) {
+        throw new Error('No workspace is available.');
       }
+
+      const selectedProject =
+        selectedWorkspace.projects.find((project) => project.projectId === projectIdRef.current) ??
+        selectedWorkspace.projects[0];
+
+      if (selectedProject) {
+        const response = await fetchProjectGraph(selectedWorkspace.workspaceId, selectedProject.projectId);
+        applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+      } else {
+        const emptySnapshot = blankSnapshot();
+        isApplyingServerSnapshotRef.current = true;
+        lastSyncedSnapshotRef.current = serializeSnapshot(emptySnapshot);
+        setWorkspaceId(selectedWorkspace.workspaceId);
+        setProjectId('');
+        setSnapshot(emptySnapshot);
+      }
+    } catch (error) {
+      setBackendStatus('offline');
+      setGraphSyncError(error instanceof Error ? error.message : 'Could not load the workflow from the backend.');
     } finally {
       hasHydratedProjectRef.current = true;
       setIsProjectGraphLoading(false);
     }
-  }, [applyServerProjectGraph]);
+  }, [applyServerProjectGraph, loadWorkspaceTree]);
 
   useEffect(() => {
     void initializeProjectGraph();
@@ -1750,15 +1814,6 @@ function PlannerApp() {
       setFileFeedback(null);
     }
   }, [isSettingsOpen]);
-
-  useEffect(() => {
-    if (!isProjectLibraryOpen) {
-      return;
-    }
-
-    setFileFeedback(null);
-    void loadStoredProjects();
-  }, [isProjectLibraryOpen, loadStoredProjects]);
 
   useEffect(() => {
     const handlePointerMove = (event: MouseEvent) => {
@@ -2337,6 +2392,7 @@ function PlannerApp() {
 
   const addTask = useCallback(
     (position?: { x: number; y: number }) => {
+      if (!projectId) return;
       const newNodeId = uid('task');
       let newNodeTitle = '';
       setSnapshot((current) => {
@@ -2386,7 +2442,7 @@ function PlannerApp() {
       setToolbarNodeId(null);
       setShouldFocusSelectedTitle(true);
     },
-    [activeScopeId, appendSessionJournal, snapshot],
+    [activeScopeId, appendSessionJournal, projectId, snapshot],
   );
 
   const addDependency = useCallback(
@@ -2605,63 +2661,155 @@ function PlannerApp() {
     [appendSessionJournal, snapshot],
   );
 
-  const createNewProject = useCallback(async () => {
-    const shouldReplace = window.confirm('Create a new blank project and replace the current project?');
-    if (!shouldReplace) {
-      return;
-    }
+  const resetProjectUi = useCallback(() => {
+    setSessionJournal([]);
+    setOpenTabs([mainTab]);
+    setActiveTabId('main');
+    setSelectedNodeId(null);
+    setSelectedNodeIds([]);
+    setToolbarNodeId(null);
+    setSelectedEdgeId(null);
+  }, []);
 
+  const showEmptyWorkspace = useCallback((nextWorkspaceId: string) => {
+    const emptySnapshot = blankSnapshot();
+    isApplyingServerSnapshotRef.current = true;
+    lastSyncedSnapshotRef.current = serializeSnapshot(emptySnapshot);
+    setWorkspaceId(nextWorkspaceId);
+    setProjectId('');
+    setSnapshot(emptySnapshot);
+    resetProjectUi();
+  }, [resetProjectUi]);
+
+  const createNewProject = useCallback(async () => {
+    if (!workspaceId) return;
+    const title = window.prompt('Project name', 'Untitled Project');
+    if (title === null) return;
     try {
-      const nextProjectId = createProjectId();
-      const response = await createProjectGraph({
-        projectId: nextProjectId,
-        project: blankSnapshot(),
-      });
-      applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
-      setSessionJournal([]);
-      setOpenTabs([mainTab]);
-      setActiveTabId('main');
-      setSelectedNodeId(null);
-      setSelectedNodeIds([]);
-      setToolbarNodeId(null);
-      setSelectedEdgeId(null);
+      await flushProjectGraphSync();
+      const project = blankSnapshot();
+      project.root.title = title.trim() || 'Untitled Project';
+      const response = await createProjectGraph(workspaceId, { project });
+      applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+      resetProjectUi();
+      await loadWorkspaceTree();
       setFileFeedback('Started a new blank project.');
     } catch (error) {
       setGraphSyncError(error instanceof Error ? error.message : 'Could not create a new project.');
     }
-  }, [applyServerProjectGraph]);
+  }, [applyServerProjectGraph, flushProjectGraphSync, loadWorkspaceTree, resetProjectUi, workspaceId]);
 
   const openStoredProject = useCallback(
-    async (nextProjectId: string) => {
-      const shouldReplace = window.confirm('Load this saved project from the database and replace the current workspace?');
-      if (!shouldReplace) {
-        return;
-      }
-
+    async (nextWorkspaceId: string, nextProjectId: string) => {
+      if (nextWorkspaceId === workspaceId && nextProjectId === projectId) return;
       setLoadingStoredProjectId(nextProjectId);
-      setStoredProjectsError(null);
+      setWorkspaceTreeError(null);
 
       try {
         await flushProjectGraphSync();
-        const response = await fetchProjectGraph(nextProjectId);
-        applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
-        setSessionJournal([]);
-        setOpenTabs([mainTab]);
-        setActiveTabId('main');
-        setSelectedNodeId(null);
-        setSelectedNodeIds([]);
-        setToolbarNodeId(null);
-        setSelectedEdgeId(null);
+        const response = await fetchProjectGraph(nextWorkspaceId, nextProjectId);
+        applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+        resetProjectUi();
         setFileFeedback(`Loaded ${sanitizeSnapshot(response.project as PlannerSnapshot).root.title} from the database.`);
-        setIsProjectLibraryOpen(false);
       } catch (error) {
-        setStoredProjectsError(error instanceof Error ? error.message : 'Could not load the selected project.');
+        setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not load the selected project.');
       } finally {
         setLoadingStoredProjectId(null);
       }
     },
-    [applyServerProjectGraph, flushProjectGraphSync],
+    [applyServerProjectGraph, flushProjectGraphSync, projectId, resetProjectUi, workspaceId],
   );
+
+  const selectWorkspace = useCallback(async (nextWorkspaceId: string) => {
+    const workspace = workspaces.find((entry) => entry.workspaceId === nextWorkspaceId);
+    if (!workspace) return;
+    setExpandedWorkspaceIds((current) => current.includes(nextWorkspaceId) ? current : [...current, nextWorkspaceId]);
+    const nextProject = workspace.projects[0];
+    if (nextProject) {
+      await openStoredProject(nextWorkspaceId, nextProject.projectId);
+    } else {
+      await flushProjectGraphSync();
+      showEmptyWorkspace(nextWorkspaceId);
+    }
+  }, [flushProjectGraphSync, openStoredProject, showEmptyWorkspace, workspaces]);
+
+  const createNewWorkspace = useCallback(async () => {
+    const name = window.prompt('Workspace name', 'New Workspace');
+    if (name === null || !name.trim()) return;
+    try {
+      await flushProjectGraphSync();
+      const created = await createWorkspace({ name: name.trim() });
+      await loadWorkspaceTree();
+      showEmptyWorkspace(created.workspaceId);
+      setExpandedWorkspaceIds((current) => [...new Set([...current, created.workspaceId])]);
+    } catch (error) {
+      setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not create the workspace.');
+    }
+  }, [flushProjectGraphSync, loadWorkspaceTree, showEmptyWorkspace]);
+
+  const renameWorkspace = useCallback(async (workspace: WorkspaceSummary) => {
+    const name = window.prompt('Rename workspace', workspace.name);
+    if (name === null || !name.trim() || name.trim() === workspace.name) return;
+    try {
+      await updateWorkspace(workspace.workspaceId, { name: name.trim() });
+      await loadWorkspaceTree();
+    } catch (error) {
+      setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not rename the workspace.');
+    }
+  }, [loadWorkspaceTree]);
+
+  const removeWorkspace = useCallback(async (workspace: WorkspaceSummary) => {
+    const confirmation = window.prompt(`Type "${workspace.name}" to delete this workspace and all of its projects.`);
+    if (confirmation !== workspace.name) return;
+    try {
+      if (workspace.workspaceId === workspaceId) await flushProjectGraphSync();
+      const result = await deleteWorkspace(workspace.workspaceId);
+      const nextWorkspaces = await loadWorkspaceTree();
+      const replacement = nextWorkspaces.find((entry) => entry.workspaceId === result.replacementWorkspaceId) ?? nextWorkspaces[0];
+      if (replacement) {
+        const nextProject = replacement.projects[0];
+        if (nextProject) await openStoredProject(replacement.workspaceId, nextProject.projectId);
+        else showEmptyWorkspace(replacement.workspaceId);
+      }
+    } catch (error) {
+      setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not delete the workspace.');
+    }
+  }, [flushProjectGraphSync, loadWorkspaceTree, openStoredProject, showEmptyWorkspace, workspaceId]);
+
+  const renameStoredProject = useCallback(async (nextWorkspaceId: string, nextProjectId: string, currentTitle: string) => {
+    const title = window.prompt('Rename project', currentTitle);
+    if (title === null || !title.trim() || title.trim() === currentTitle) return;
+    try {
+      if (nextProjectId === projectId) await flushProjectGraphSync();
+      const response = await updateProject(nextWorkspaceId, nextProjectId, { title: title.trim() });
+      if (nextProjectId === projectId) {
+        applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+      }
+      await loadWorkspaceTree();
+    } catch (error) {
+      setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not rename the project.');
+    }
+  }, [applyServerProjectGraph, flushProjectGraphSync, loadWorkspaceTree, projectId]);
+
+  const removeStoredProject = useCallback(async (nextWorkspaceId: string, nextProjectId: string, title: string) => {
+    if (!window.confirm(`Delete project "${title}"? This removes all of its nodes and edges.`)) return;
+    try {
+      if (syncTimerRef.current !== null) {
+        window.clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+      await deleteProject(nextWorkspaceId, nextProjectId);
+      const nextWorkspaces = await loadWorkspaceTree();
+      if (nextProjectId === projectId) {
+        const workspace = nextWorkspaces.find((entry) => entry.workspaceId === nextWorkspaceId);
+        const nextProject = workspace?.projects[0];
+        if (nextProject) await openStoredProject(nextWorkspaceId, nextProject.projectId);
+        else showEmptyWorkspace(nextWorkspaceId);
+      }
+    } catch (error) {
+      setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not delete the project.');
+    }
+  }, [loadWorkspaceTree, openStoredProject, projectId, showEmptyWorkspace]);
 
   const handleNodesChange = useCallback((changes: NodeChange<PlannerFlowNode>[]) => {
     setCanvasNodes((current) => {
@@ -2840,15 +2988,11 @@ function PlannerApp() {
 
   const applyLoadedProject = useCallback(
     async (projectFile: ProjectFileV1) => {
+      if (!workspaceId) throw new Error('Create or select a workspace before importing a project.');
       const normalized = sanitizeProjectFile(projectFile);
       await flushProjectGraphSync();
-      const response = await applyProjectGraphOperations(projectId, [
-        {
-          type: 'replace_graph',
-          project: normalized.project,
-        },
-      ]);
-      applyServerProjectGraph(response.projectId, response.project as PlannerSnapshot);
+      const response = await createProjectGraph(workspaceId, { project: normalized.project });
+      applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
       setSessionJournal([]);
       setOpenTabs(normalized.ui.openTabs);
       setActiveTabId(normalized.ui.activeTabId);
@@ -2856,9 +3000,10 @@ function PlannerApp() {
       setSelectedNodeIds(normalized.ui.selectedNodeId ? [normalized.ui.selectedNodeId] : []);
       setToolbarNodeId(null);
       setSelectedEdgeId(null);
-      setFileFeedback('Project loaded from file.');
+      await loadWorkspaceTree();
+      setFileFeedback('Imported a new project from file.');
     },
-    [applyServerProjectGraph, flushProjectGraphSync, projectId],
+    [applyServerProjectGraph, flushProjectGraphSync, loadWorkspaceTree, workspaceId],
   );
 
   const handleLoadFile = useCallback(
@@ -2902,6 +3047,7 @@ function PlannerApp() {
 
   const activeTabDescriptor = openTabs.find((tab) => tab.id === activeTabId) ?? mainTab;
   const activeTabLabel = tabTitle(activeTabDescriptor);
+  const activeWorkspace = workspaces.find((workspace) => workspace.workspaceId === workspaceId) ?? null;
 
   return (
     <>
@@ -2914,21 +3060,22 @@ function PlannerApp() {
           </div>
 
           <div className="topbar__search-stack">
-            <label className="topbar__search" aria-label="Search workspace">
+            <label className="topbar__search" aria-label="Search project">
               <span className="topbar__search-icon" aria-hidden="true">
                 <ToolbarIcon name="search" />
               </span>
               <input
                 value={searchQuery}
-                placeholder="Search workspace or use #Tag.Path"
+                placeholder="Search project or use #Tag.Path"
                 onChange={(event) => setSearchQuery(event.target.value)}
+                disabled={!projectId}
               />
             </label>
 
             {normalizedSearchQuery ? (
               <div className="search-overlay" role="listbox" aria-label="Search results">
                 <div className="search-overlay__header">
-                  <span>{isTagSearch ? 'Tag Search' : 'Workspace Search'}</span>
+                  <span>{isTagSearch ? 'Tag Search' : 'Project Search'}</span>
                   <strong>{searchResults.length} results</strong>
                 </div>
                 <div className="search-overlay__results">
@@ -2961,7 +3108,7 @@ function PlannerApp() {
             ) : null}
           </div>
 
-          <nav className="topbar__nav" aria-label="Workspace views">
+          <nav className="topbar__nav" aria-label="Project views">
             <div className={['topbar__tab', activeTabId === 'main' ? 'is-active' : ''].join(' ')}>
               <button
                 type="button"
@@ -2969,39 +3116,29 @@ function PlannerApp() {
                 onClick={() => setActiveTabId('main')}
                 aria-current={activeTabId === 'main' ? 'page' : undefined}
               >
-                Echo
+                {projectId ? snapshot.root.title || 'Untitled Project' : activeWorkspace?.name || 'No project'}
               </button>
             </div>
           </nav>
 
           <div className="topbar__actions">
-            <button type="button" className="primary-action" onClick={() => addTask()} disabled={isProjectGraphLoading}>
+            <button type="button" className="primary-action" onClick={() => addTask()} disabled={isProjectGraphLoading || !projectId}>
               New Node
             </button>
-            <button type="button" className="secondary" onClick={() => void createNewProject()} disabled={isProjectGraphLoading}>
+            <button type="button" className="secondary" onClick={() => void createNewProject()} disabled={isProjectGraphLoading || !workspaceId}>
               New Project
             </button>
             <button
               type="button"
               className="secondary"
-              onClick={() => setIsProjectLibraryOpen(true)}
-              disabled={isProjectGraphLoading}
-              aria-label="Load project from database"
-              title="Load project from database"
-            >
-              Load
-            </button>
-            <button
-              type="button"
-              className="secondary"
               onClick={() => fileInputRef.current?.click()}
-              disabled={isProjectGraphLoading}
+              disabled={isProjectGraphLoading || !workspaceId}
               aria-label="Import project file"
               title="Import project file"
             >
               Import
             </button>
-            <button type="button" className="secondary" onClick={saveProject} disabled={isProjectGraphLoading}>
+            <button type="button" className="secondary" onClick={saveProject} disabled={isProjectGraphLoading || !projectId}>
               Export
             </button>
             <button
@@ -3032,21 +3169,123 @@ function PlannerApp() {
               </p>
             ) : null}
 
-            <aside className="floating-available-panel" aria-label="Available work">
-              <div className="panel-header floating-panel-header">
-                <h2>Available Work</h2>
-                <span>{availableTasks.length}</span>
+            <aside className="floating-available-panel workspace-tree-panel" aria-label="Workspaces and available work">
+              <div className="workspace-tree__header">
+                <div>
+                  <span className="workspace-tree__eyebrow">Portfolio</span>
+                  <h2>Workspaces</h2>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button secondary"
+                  onClick={() => void createNewWorkspace()}
+                  aria-label="Create workspace"
+                  title="Create workspace"
+                >
+                  <Plus aria-hidden="true" />
+                </button>
               </div>
-              <div className="floating-task-list">
-                {availableTasks.length === 0 ? (
-                  <p className="muted">No tasks are available yet. Complete a blocker to unlock the next path.</p>
-                ) : (
-                  availableTasks.map((task) => (
-                    <button key={task.id} className="floating-task-card" onClick={() => focusNodeInWorkspace(task)}>
-                      <span>{task.title}</span>
-                    </button>
-                  ))
-                )}
+
+              {workspaceTreeError ? <p className="feedback feedback--error workspace-tree__feedback">{workspaceTreeError}</p> : null}
+              {isWorkspaceTreeLoading && workspaces.length === 0 ? <p className="muted workspace-tree__feedback">Loading workspaces...</p> : null}
+
+              <div className="workspace-tree" aria-label="Workspace project tree">
+                {workspaces.map((workspace) => {
+                  const isExpanded = expandedWorkspaceIds.includes(workspace.workspaceId);
+                  const isActiveWorkspace = workspace.workspaceId === workspaceId;
+                  return (
+                    <div key={workspace.workspaceId} className="workspace-tree__workspace">
+                      <div className={['workspace-tree__row', isActiveWorkspace ? 'is-active' : ''].join(' ')}>
+                        <button
+                          type="button"
+                          className="workspace-tree__toggle"
+                          onClick={() => setExpandedWorkspaceIds((current) =>
+                            current.includes(workspace.workspaceId)
+                              ? current.filter((id) => id !== workspace.workspaceId)
+                              : [...current, workspace.workspaceId])}
+                          aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${workspace.name}`}
+                        >
+                          {isExpanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                        </button>
+                        <button type="button" className="workspace-tree__label" onClick={() => void selectWorkspace(workspace.workspaceId)}>
+                          <span>{workspace.name}</span>
+                          <small>{workspace.projectCount}</small>
+                        </button>
+                        <div className="workspace-tree__actions">
+                          <button type="button" onClick={() => void renameWorkspace(workspace)} aria-label={`Rename ${workspace.name}`} title="Rename workspace">
+                            <Pencil aria-hidden="true" />
+                          </button>
+                          <button type="button" onClick={() => void removeWorkspace(workspace)} aria-label={`Delete ${workspace.name}`} title="Delete workspace">
+                            <Trash2 aria-hidden="true" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {isExpanded ? (
+                        <div className="workspace-tree__projects">
+                          {workspace.projects.map((project) => (
+                            <div key={project.projectId} className={['workspace-tree__project', project.projectId === projectId ? 'is-active' : ''].join(' ')}>
+                              <button
+                                type="button"
+                                className="workspace-tree__project-label"
+                                onClick={() => void openStoredProject(workspace.workspaceId, project.projectId)}
+                                disabled={loadingStoredProjectId !== null}
+                              >
+                                <span>{loadingStoredProjectId === project.projectId ? 'Loading...' : project.title || 'Untitled Project'}</span>
+                                <small>{project.nodeCount}</small>
+                              </button>
+                              <div className="workspace-tree__actions">
+                                <button type="button" onClick={() => void renameStoredProject(workspace.workspaceId, project.projectId, project.title)} aria-label={`Rename ${project.title}`} title="Rename project">
+                                  <Pencil aria-hidden="true" />
+                                </button>
+                                <button type="button" onClick={() => void removeStoredProject(workspace.workspaceId, project.projectId, project.title)} aria-label={`Delete ${project.title}`} title="Delete project">
+                                  <Trash2 aria-hidden="true" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                          {workspace.projects.length === 0 ? <p className="muted workspace-tree__empty">No projects yet</p> : null}
+                          {isActiveWorkspace ? (
+                            <button type="button" className="workspace-tree__add-project" onClick={() => void createNewProject()}>
+                              <Plus aria-hidden="true" />
+                              <span>New project</span>
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="available-work-section">
+                <button
+                  type="button"
+                  className="panel-header floating-panel-header available-work-section__toggle"
+                  onClick={() => setIsAvailableWorkExpanded((current) => !current)}
+                  aria-expanded={isAvailableWorkExpanded}
+                >
+                  <span className="available-work-section__title">
+                    {isAvailableWorkExpanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                    Available Work
+                  </span>
+                  <span>{availableTasks.length}</span>
+                </button>
+                {isAvailableWorkExpanded ? (
+                  <div className="floating-task-list">
+                    {projectId && availableTasks.length === 0 ? (
+                      <p className="muted">No tasks are available yet. Complete a blocker to unlock the next path.</p>
+                    ) : !projectId ? (
+                      <p className="muted">Create or select a project to see available work.</p>
+                    ) : (
+                      availableTasks.map((task) => (
+                        <button key={task.id} className="floating-task-card" onClick={() => focusNodeInWorkspace(task)}>
+                          <span>{task.title}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                ) : null}
               </div>
             </aside>
 
@@ -3121,6 +3360,16 @@ function PlannerApp() {
                       ))}
                     </div>
                   </div>
+                  {!projectId && !isProjectGraphLoading ? (
+                    <div className="empty-project-state">
+                      <h2>{activeWorkspace?.name ?? 'Workspace'}</h2>
+                      <p>This workspace has no projects.</p>
+                      <button type="button" className="primary-action" onClick={() => void createNewProject()}>
+                        <Plus aria-hidden="true" />
+                        New Project
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
                 <ReactFlow
                   nodes={canvasNodes}
@@ -3168,7 +3417,7 @@ function PlannerApp() {
                     const nextDropTarget = resolveNodeDropTarget(node.id, node.position);
                     setDragDropTarget(nextDropTarget);
                     setDragPreviewNodeId(node.id);
-                    if (nextDropTarget) {
+                    if (nextDropTarget || !(event instanceof MouseEvent)) {
                       setInsertionEdgeId(null);
                     } else {
                       setInsertionEdgeId(findEdgeIdIntersectingNode(event, node.id) ?? findEdgeIdAtPoint(event.clientX, event.clientY));
@@ -3193,7 +3442,11 @@ function PlannerApp() {
                     } else if (finalDropTarget?.mode === 'combine') {
                       combineNodesIntoGroup(node.id, finalDropTarget.nodeId, finalPosition);
                     } else {
-                      const hoveredEdgeId = findEdgeIdIntersectingNode(event, node.id) ?? findEdgeIdAtPoint(event.clientX, event.clientY);
+                      const hoveredEdgeId =
+                        event instanceof MouseEvent
+                          ? findEdgeIdIntersectingNode(event, node.id) ??
+                            findEdgeIdAtPoint(event.clientX, event.clientY)
+                          : null;
                       if (hoveredEdgeId) {
                         insertNodeIntoEdge(hoveredEdgeId, node.id);
                       } else {
@@ -3284,76 +3537,6 @@ function PlannerApp() {
         </div>
       </div>
 
-      {isProjectLibraryOpen ? (
-        <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="Load project">
-          <button
-            type="button"
-            className="settings-overlay__scrim"
-            onClick={() => setIsProjectLibraryOpen(false)}
-            aria-label="Close project library"
-          />
-          <div className="settings-overlay__panel project-library-overlay__panel">
-            <div className="project-library-overlay">
-              <div className="panel-header">
-                <h2>Load Project</h2>
-                <button
-                  type="button"
-                  className="icon-button secondary"
-                  onClick={() => setIsProjectLibraryOpen(false)}
-                  aria-label="Close project library"
-                >
-                  <ToolbarIcon name="close" />
-                </button>
-              </div>
-
-              <p className="muted">
-                Choose a workflow stored in PostgreSQL. Use <strong>Import</strong> if you want to replace the current workflow from a JSON file instead.
-              </p>
-
-              {storedProjectsError ? <p className="feedback feedback--error">{storedProjectsError}</p> : null}
-
-              {isStoredProjectsLoading ? (
-                <p className="feedback">Loading saved projects...</p>
-              ) : storedProjects.length > 0 ? (
-                <div className="project-library-list">
-                  {storedProjects.map((storedProject) => (
-                    <button
-                      key={storedProject.projectId}
-                      type="button"
-                      className={['project-library-card', storedProject.projectId === projectId ? 'is-current' : ''].join(' ')}
-                      onClick={() => void openStoredProject(storedProject.projectId)}
-                      disabled={loadingStoredProjectId !== null}
-                    >
-                      <div className="project-library-card__header">
-                        <div>
-                          <h3>{storedProject.title || 'Untitled project'}</h3>
-                          <p className="muted">{storedProject.projectId}</p>
-                        </div>
-                        <span className="status-pill">{storedProject.projectId === projectId ? 'Current' : 'Stored'}</span>
-                      </div>
-                      <p className="muted">{storedProject.description.trim() || 'No description saved for this project yet.'}</p>
-                      <div className="project-library-card__meta">
-                        <span>{storedProject.nodeCount} nodes</span>
-                        <span>{storedProject.edgeCount} edges</span>
-                        <span>v{storedProject.graphVersion}</span>
-                      </div>
-                      <div className="project-library-card__footer">
-                        <span>{loadingStoredProjectId === storedProject.projectId ? 'Loading...' : 'Load project'}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="glass-card">
-                  <h3>No stored projects yet</h3>
-                  <p className="muted">Create a project or import one from file, and it will appear here once it has been persisted.</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
       {isSettingsOpen ? (
         <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="Settings">
           <button type="button" className="settings-overlay__scrim" onClick={() => setIsSettingsOpen(false)} aria-label="Close settings" />
@@ -3384,8 +3567,9 @@ function PlannerApp() {
                   </span>
                 </div>
                 <p className="muted">Workflow state is stored through the backend graph API and PostgreSQL. AI, OpenAI, and Notion features remain removed.</p>
-                <p className="muted">Current project ID: {projectId}</p>
-                <p className="muted">Stored project library: {storedProjects.length > 0 ? `${storedProjects.length} known projects` : 'open the Load dialog to refresh'}</p>
+                <p className="muted">Current workspace: {activeWorkspace?.name ?? 'None selected'}</p>
+                <p className="muted">Current project ID: {projectId || 'No project selected'}</p>
+                <p className="muted">Workspace portfolio: {workspaces.length} workspace{workspaces.length === 1 ? '' : 's'}</p>
               </div>
             </div>
           </div>

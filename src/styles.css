@@ -131,13 +131,8 @@
     width: 1.25rem;
     height: 1.25rem;
     font-size: 1.25rem;
-  }
-
-  .app-icon svg {
-    display: block;
-    width: 100%;
-    height: 100%;
-    fill: currentColor;
+    fill: none;
+    stroke: currentColor;
   }
 
   .topbar__brand-icon .app-icon {
@@ -469,7 +464,7 @@
   }
 
   .canvas-shell__overlay {
-    @apply pointer-events-none absolute inset-x-0 top-0 z-10;
+    @apply pointer-events-none absolute inset-0 z-10;
   }
 
   .canvas-shell__nav {
@@ -532,6 +527,164 @@
 
   .floating-available-panel > * {
     pointer-events: auto;
+  }
+
+  .workspace-tree-panel {
+    @apply gap-0 overflow-hidden p-4;
+    max-height: calc(100% - 3rem);
+    background: rgba(24, 23, 27, 0.92);
+    backdrop-filter: blur(16px);
+    border-radius: var(--radius-architectural);
+    box-shadow:
+      inset 0 0 0 1px rgba(225, 195, 255, 0.16),
+      0 24px 40px -24px rgba(0, 0, 0, 0.55);
+  }
+
+  .workspace-tree__header {
+    @apply flex items-center justify-between gap-3 border-b border-outline/15 pb-3;
+  }
+
+  .workspace-tree__header h2 {
+    @apply m-0 font-headline text-lg font-bold text-on-surface;
+  }
+
+  .workspace-tree__eyebrow {
+    @apply block font-headline text-[10px] font-bold uppercase text-on-surface-dim;
+    letter-spacing: 0.18em;
+  }
+
+  .workspace-tree__header .icon-button svg,
+  .workspace-tree__actions svg,
+  .workspace-tree__toggle svg,
+  .workspace-tree__add-project svg,
+  .available-work-section__title svg,
+  .empty-project-state svg {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  .workspace-tree__feedback {
+    @apply mt-3;
+  }
+
+  .workspace-tree {
+    @apply min-h-0 overflow-y-auto py-3;
+    max-height: min(28rem, calc(100vh - 25rem));
+    scrollbar-gutter: stable;
+  }
+
+  .workspace-tree__workspace + .workspace-tree__workspace {
+    @apply mt-1;
+  }
+
+  .workspace-tree__row,
+  .workspace-tree__project {
+    @apply grid min-h-10 items-center gap-1;
+    grid-template-columns: 1.75rem minmax(0, 1fr) auto;
+    border-radius: var(--radius-architectural);
+  }
+
+  .workspace-tree__project {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .workspace-tree__row:hover,
+  .workspace-tree__project:hover,
+  .workspace-tree__row.is-active,
+  .workspace-tree__project.is-active {
+    background: rgba(225, 195, 255, 0.08);
+  }
+
+  .workspace-tree__row.is-active,
+  .workspace-tree__project.is-active {
+    box-shadow: inset 2px 0 0 rgba(225, 195, 255, 0.85);
+  }
+
+  .workspace-tree__toggle,
+  .workspace-tree__label,
+  .workspace-tree__project-label,
+  .workspace-tree__actions button,
+  .workspace-tree__add-project,
+  .available-work-section__toggle {
+    @apply border-0 bg-transparent p-0 text-on-surface-variant hover:bg-transparent hover:text-on-surface;
+  }
+
+  .workspace-tree__toggle {
+    @apply flex h-8 w-7 items-center justify-center;
+  }
+
+  .workspace-tree__label,
+  .workspace-tree__project-label {
+    @apply flex min-w-0 items-center justify-between gap-2 px-1 py-2 text-left;
+  }
+
+  .workspace-tree__label span,
+  .workspace-tree__project-label span {
+    @apply truncate text-xs font-semibold;
+  }
+
+  .workspace-tree__label small,
+  .workspace-tree__project-label small {
+    @apply text-[10px] text-on-surface-dim;
+  }
+
+  .workspace-tree__actions {
+    @apply flex items-center pr-1;
+  }
+
+  .workspace-tree__actions button {
+    @apply flex h-7 w-7 items-center justify-center text-on-surface-dim;
+  }
+
+  .workspace-tree__actions button:hover {
+    @apply text-primary;
+  }
+
+  .workspace-tree__projects {
+    @apply ml-7 border-l border-outline/15 pl-2;
+  }
+
+  .workspace-tree__empty {
+    @apply px-2 py-2 text-xs;
+  }
+
+  .workspace-tree__add-project {
+    @apply mt-1 flex w-full items-center gap-2 px-2 py-2 text-left text-xs font-semibold text-primary;
+  }
+
+  .available-work-section {
+    @apply min-h-0 border-t border-outline/15 pt-3;
+  }
+
+  .available-work-section__toggle {
+    @apply flex w-full items-center justify-between text-left;
+  }
+
+  .available-work-section__title {
+    @apply flex items-center gap-2 font-headline text-xs font-bold uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .available-work-section .floating-task-list {
+    @apply mt-3;
+    max-height: min(18rem, calc(100vh - 35rem));
+  }
+
+  .empty-project-state {
+    @apply pointer-events-auto absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center;
+    width: min(28rem, calc(100% - 4rem));
+  }
+
+  .empty-project-state h2 {
+    @apply m-0 font-headline text-3xl font-bold text-on-surface;
+  }
+
+  .empty-project-state p {
+    @apply mb-5 mt-2 text-sm text-on-surface-variant;
+  }
+
+  .empty-project-state .primary-action {
+    @apply inline-flex items-center gap-2;
   }
 
   .floating-properties-panel {
@@ -1274,6 +1427,80 @@
 @layer utilities {
   .architectural-divider {
     box-shadow: inset 0 -1px 0 rgba(68, 72, 76, 0.1);
+  }
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .topbar__brand,
+  .topbar__nav {
+    display: none;
+  }
+
+  .topbar__search-stack,
+  .topbar__actions {
+    width: 100%;
+    min-width: 0;
+    grid-column: 1;
+  }
+
+  .topbar__actions {
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+    scrollbar-width: thin;
+  }
+
+  .topbar__actions > button {
+    flex: 0 0 auto;
+    min-height: 2.75rem;
+    padding: 0.65rem 0.9rem;
+  }
+
+  .workspace-tree-panel {
+    top: 1rem;
+    left: 1rem;
+    right: 1rem;
+    width: auto;
+    max-height: 18rem;
+  }
+
+  .workspace-tree {
+    max-height: 9rem;
+  }
+
+  .available-work-section .floating-task-list {
+    max-height: 5rem;
+  }
+
+  .floating-properties-panel {
+    display: none;
+  }
+
+  .canvas-shell__nav {
+    top: 20rem;
+    left: 1rem;
+    right: 1rem;
+    width: auto;
+    max-width: none;
+    flex-wrap: wrap;
+  }
+
+  .canvas-shell__breadcrumbs {
+    max-width: calc(100vw - 2rem);
+  }
+
+  .floating-feedback {
+    top: 0.5rem;
+    left: 1rem;
+    right: 1rem;
+    max-width: none;
   }
 }
 
