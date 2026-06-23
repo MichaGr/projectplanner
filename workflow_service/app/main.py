@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import Depends, FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, insert, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, selectinload, sessionmaker
 
 
 DATABASE_URL = os.getenv(
@@ -89,6 +89,8 @@ class NodeModel(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     completion_criteria: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    due_date: Mapped[date | None] = mapped_column(nullable=True)
+    do_date: Mapped[date | None] = mapped_column(nullable=True)
     parent_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     position_x: Mapped[float] = mapped_column(Float, default=0)
     position_y: Mapped[float] = mapped_column(Float, default=0)
@@ -151,8 +153,17 @@ class NodePayload(BaseModel):
     description: str = ""
     completionCriteria: str = ""
     tags: list[str] = Field(default_factory=list)
+    createdAt: datetime | None = None
+    dueDate: date | None = None
+    doDate: date | None = None
     parentId: str | None = None
     size: dict[str, float] | None = None
+
+    @model_validator(mode="after")
+    def validate_schedule(self):
+        if self.doDate and self.dueDate and self.doDate > self.dueDate:
+            raise ValueError("Do date cannot be later than due date.")
+        return self
 
 
 class EdgePayload(BaseModel):
@@ -259,6 +270,23 @@ class DeleteProjectResponse(BaseModel):
     deletedProjectId: str
 
 
+class AvailableTaskItem(BaseModel):
+    workspaceId: str
+    workspaceName: str
+    projectId: str
+    projectTitle: str
+    taskId: str
+    title: str
+
+
+class CompleteTaskResponse(BaseModel):
+    workspaceId: str
+    projectId: str
+    taskId: str
+    status: Literal["done"]
+    graphVersion: int
+
+
 def serialize_project(project: ProjectModel) -> PlannerSnapshotPayload:
     nodes = sorted(project.nodes, key=lambda node: node.id)
     edges = sorted(project.edges, key=lambda edge: edge.id)
@@ -280,6 +308,9 @@ def serialize_project(project: ProjectModel) -> PlannerSnapshotPayload:
                 description=node.description,
                 completionCriteria=node.completion_criteria,
                 tags=list(node.tags or []),
+                createdAt=node.created_at,
+                dueDate=node.due_date,
+                doDate=node.do_date,
                 parentId=node.parent_node_id,
                 size={"width": node.width, "height": node.height} if node.width and node.height else None,
             )
@@ -391,6 +422,74 @@ def validate_snapshot(snapshot: PlannerSnapshotPayload) -> None:
         visit(node_id)
 
 
+def is_task_available(project: ProjectModel, task: NodeModel) -> bool:
+    if task.kind != "task" or task.status == "done":
+        return False
+
+    nodes_by_id = {node.id: node for node in project.nodes}
+    children_by_parent: dict[str, list[NodeModel]] = {}
+    for node in project.nodes:
+        if node.parent_node_id:
+            children_by_parent.setdefault(node.parent_node_id, []).append(node)
+
+    completion_cache: dict[str, bool] = {}
+
+    def node_is_complete(node_id: str) -> bool:
+        if node_id in completion_cache:
+            return completion_cache[node_id]
+        node = nodes_by_id.get(node_id)
+        if not node:
+            return False
+        if node.kind == "task":
+            result = node.status == "done"
+        else:
+            descendant_tasks: list[NodeModel] = []
+            pending = list(children_by_parent.get(node.id, []))
+            while pending:
+                child = pending.pop()
+                if child.kind == "task":
+                    descendant_tasks.append(child)
+                else:
+                    pending.extend(children_by_parent.get(child.id, []))
+            result = bool(descendant_tasks) and all(child.status == "done" for child in descendant_tasks)
+        completion_cache[node_id] = result
+        return result
+
+    blocker_targets = {task.id}
+    parent_id = task.parent_node_id
+    while parent_id:
+        blocker_targets.add(parent_id)
+        parent_id = nodes_by_id.get(parent_id).parent_node_id if nodes_by_id.get(parent_id) else None
+
+    blockers = [edge for edge in project.edges if edge.target_node_id in blocker_targets]
+    return all(node_is_complete(edge.source_node_id) for edge in blockers)
+
+
+def available_task_items(projects: list[ProjectModel]) -> list[AvailableTaskItem]:
+    items = [
+        AvailableTaskItem(
+            workspaceId=project.workspace_id,
+            workspaceName=project.workspace.name,
+            projectId=project.id,
+            projectTitle=project.title,
+            taskId=node.id,
+            title=node.title,
+        )
+        for project in projects
+        for node in project.nodes
+        if is_task_available(project, node)
+    ]
+    return sorted(
+        items,
+        key=lambda item: (
+            item.workspaceName.casefold(),
+            item.projectTitle.casefold(),
+            item.title.casefold(),
+            item.taskId,
+        ),
+    )
+
+
 def order_nodes_for_insert(nodes: list[NodePayload]) -> list[NodePayload]:
     nodes_by_id = {node.id: node for node in nodes}
     ordered: list[NodePayload] = []
@@ -422,6 +521,8 @@ def order_nodes_for_insert(nodes: list[NodePayload]) -> list[NodePayload]:
 def replace_graph(session: Session, project: ProjectModel, snapshot: PlannerSnapshotPayload) -> None:
     validate_snapshot(snapshot)
 
+    created_at_by_node_id = {node.id: node.created_at for node in project.nodes}
+
     project.title = snapshot.root.title
     project.description = snapshot.root.description
     project.completion_criteria = snapshot.root.completionCriteria
@@ -447,12 +548,14 @@ def replace_graph(session: Session, project: ProjectModel, snapshot: PlannerSnap
                     "description": node.description,
                     "completion_criteria": node.completionCriteria,
                     "tags": list(node.tags),
+                    "due_date": node.dueDate,
+                    "do_date": node.doDate,
                     "parent_node_id": node.parentId,
                     "position_x": node.position["x"],
                     "position_y": node.position["y"],
                     "width": node.size["width"] if node.size else None,
                     "height": node.size["height"] if node.size else None,
-                    "created_at": timestamp,
+                    "created_at": created_at_by_node_id.get(node.id, timestamp),
                     "updated_at": timestamp,
                 }
                 for node in ordered_nodes
@@ -533,6 +636,34 @@ def health(session: Session = Depends(get_session)):
 def list_workspaces(session: Session = Depends(get_session)):
     workspaces = session.scalars(select(WorkspaceModel).order_by(WorkspaceModel.updated_at.desc())).all()
     return [serialize_workspace(workspace) for workspace in workspaces]
+
+
+@app.get("/api/available-tasks", response_model=list[AvailableTaskItem])
+def list_available_tasks(
+    scope: Literal["all", "workspace", "project"] = Query(default="project"),
+    workspace_id: str | None = Query(default=None, alias="workspaceId"),
+    project_id: str | None = Query(default=None, alias="projectId"),
+    session: Session = Depends(get_session),
+):
+    query = select(ProjectModel).options(
+        selectinload(ProjectModel.workspace),
+        selectinload(ProjectModel.nodes),
+        selectinload(ProjectModel.edges),
+    )
+
+    if scope == "workspace":
+        if not workspace_id:
+            raise HTTPException(status_code=422, detail="workspaceId is required for workspace scope.")
+        ensure_workspace(session, workspace_id)
+        query = query.where(ProjectModel.workspace_id == workspace_id)
+    elif scope == "project":
+        if not workspace_id or not project_id:
+            raise HTTPException(status_code=422, detail="workspaceId and projectId are required for project scope.")
+        ensure_project(session, workspace_id, project_id)
+        query = query.where(ProjectModel.id == project_id, ProjectModel.workspace_id == workspace_id)
+
+    projects = list(session.scalars(query).all())
+    return available_task_items(projects)
 
 
 @app.post("/api/workspaces", response_model=WorkspaceListItem, status_code=201)
@@ -674,6 +805,52 @@ def delete_project(workspace_id: str, project_id: str, session: Session = Depend
     workspace.updated_at = utc_now()
     session.commit()
     return DeleteProjectResponse(deletedProjectId=project_id)
+
+
+@app.post(
+    "/api/workspaces/{workspace_id}/projects/{project_id}/tasks/{task_id}/complete",
+    response_model=CompleteTaskResponse,
+)
+def complete_available_task(
+    workspace_id: str,
+    project_id: str,
+    task_id: str,
+    session: Session = Depends(get_session),
+):
+    project = session.scalar(
+        select(ProjectModel)
+        .where(ProjectModel.id == project_id, ProjectModel.workspace_id == workspace_id)
+        .options(selectinload(ProjectModel.nodes), selectinload(ProjectModel.edges))
+        .with_for_update()
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    task = next((node for node in project.nodes if node.id == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if task.kind != "task":
+        raise HTTPException(status_code=409, detail="Only tasks can be completed.")
+    if task.status == "done":
+        raise HTTPException(status_code=409, detail="Task is already complete.")
+    if not is_task_available(project, task):
+        raise HTTPException(status_code=409, detail="Task is no longer available.")
+
+    timestamp = utc_now()
+    task.status = "done"
+    task.updated_at = timestamp
+    project.graph_version += 1
+    project.updated_at = timestamp
+    project.workspace.updated_at = timestamp
+    session.commit()
+
+    return CompleteTaskResponse(
+        workspaceId=workspace_id,
+        projectId=project_id,
+        taskId=task_id,
+        status="done",
+        graphVersion=project.graph_version,
+    )
 
 
 @app.post(

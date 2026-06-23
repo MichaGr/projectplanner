@@ -35,6 +35,15 @@ def create_project(client: TestClient, workspace_id: str, title: str = "Launch")
     return response.json()
 
 
+def replace_graph(client: TestClient, workspace_id: str, project_id: str, graph: dict) -> dict:
+    response = client.post(
+        f"/api/workspaces/{workspace_id}/projects/{project_id}/operations",
+        json={"operations": [{"type": "replace_graph", "project": graph}]},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 def test_workspace_project_crud_and_nested_ownership(client: TestClient):
     workspace = create_workspace(client)
     other_workspace = create_workspace(client, "Research")
@@ -111,3 +120,149 @@ def test_deleting_final_workspace_recreates_default(client: TestClient):
     assert listed[0]["workspaceId"] == replacement_id
     assert listed[0]["name"] == "Default Workspace"
     assert listed[0]["projects"] == []
+
+
+def test_available_tasks_support_all_scopes_and_inherited_blockers(client: TestClient):
+    alpha = create_workspace(client, "Alpha")
+    beta = create_workspace(client, "Beta")
+    alpha_project = create_project(client, alpha["workspaceId"], "Alpha Project")
+    beta_project = create_project(client, beta["workspaceId"], "Beta Project")
+
+    replace_graph(
+        client,
+        alpha["workspaceId"],
+        alpha_project["projectId"],
+        {
+            "root": {"title": "Alpha Project", "description": "", "completionCriteria": "", "tags": []},
+            "nodes": [
+                {"id": "prerequisite", "kind": "task", "title": "Prerequisite", "status": "done", "position": {"x": 0, "y": 0}, "tags": []},
+                {"id": "group", "kind": "group", "title": "Phase", "status": "todo", "position": {"x": 100, "y": 0}, "tags": []},
+                {"id": "nested", "kind": "task", "title": "Shared title", "status": "todo", "position": {"x": 0, "y": 0}, "parentId": "group", "tags": []},
+                {"id": "blocked", "kind": "task", "title": "Blocked", "status": "todo", "position": {"x": 200, "y": 0}, "tags": []},
+                {"id": "unfinished", "kind": "task", "title": "Unfinished", "status": "todo", "position": {"x": 300, "y": 0}, "tags": []},
+            ],
+            "edges": [
+                {"id": "edge-group", "source": "prerequisite", "target": "group"},
+                {"id": "edge-blocked", "source": "unfinished", "target": "blocked"},
+            ],
+        },
+    )
+    replace_graph(
+        client,
+        beta["workspaceId"],
+        beta_project["projectId"],
+        {
+            "root": {"title": "Beta Project", "description": "", "completionCriteria": "", "tags": []},
+            "nodes": [
+                {"id": "beta-task", "kind": "task", "title": "Shared title", "status": "todo", "position": {"x": 0, "y": 0}, "tags": []},
+            ],
+            "edges": [],
+        },
+    )
+
+    all_tasks = client.get("/api/available-tasks", params={"scope": "all"})
+    assert all_tasks.status_code == 200
+    assert [(item["workspaceName"], item["projectTitle"], item["title"]) for item in all_tasks.json()] == [
+        ("Alpha", "Alpha Project", "Shared title"),
+        ("Alpha", "Alpha Project", "Unfinished"),
+        ("Beta", "Beta Project", "Shared title"),
+    ]
+
+    workspace_tasks = client.get(
+        "/api/available-tasks",
+        params={"scope": "workspace", "workspaceId": alpha["workspaceId"]},
+    )
+    assert [item["taskId"] for item in workspace_tasks.json()] == ["nested", "unfinished"]
+
+    project_tasks = client.get(
+        "/api/available-tasks",
+        params={
+            "scope": "project",
+            "workspaceId": beta["workspaceId"],
+            "projectId": beta_project["projectId"],
+        },
+    )
+    assert [item["taskId"] for item in project_tasks.json()] == ["beta-task"]
+
+    invalid_scope = client.get("/api/available-tasks", params={"scope": "workspace"})
+    assert invalid_scope.status_code == 422
+
+
+def test_complete_available_task_is_targeted_and_increments_graph_version(client: TestClient):
+    workspace = create_workspace(client)
+    project = create_project(client, workspace["workspaceId"])
+    graph = {
+        "root": {"title": "Launch", "description": "", "completionCriteria": "", "tags": []},
+        "nodes": [
+            {"id": "ready", "kind": "task", "title": "Ready", "status": "todo", "position": {"x": 0, "y": 0}, "tags": []},
+            {"id": "blocked", "kind": "task", "title": "Blocked", "status": "todo", "position": {"x": 100, "y": 0}, "tags": []},
+        ],
+        "edges": [{"id": "dependency", "source": "ready", "target": "blocked"}],
+    }
+    replace_graph(client, workspace["workspaceId"], project["projectId"], graph)
+    version_before = client.get(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}"
+    ).json()["graphVersion"]
+
+    stale = client.post(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/tasks/blocked/complete"
+    )
+    assert stale.status_code == 409
+
+    completed = client.post(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/tasks/ready/complete"
+    )
+    assert completed.status_code == 200
+    assert completed.json()["graphVersion"] == version_before + 1
+
+    graph_after = client.get(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/graph"
+    ).json()["project"]
+    statuses = {node["id"]: node["status"] for node in graph_after["nodes"]}
+    assert statuses == {"blocked": "todo", "ready": "done"}
+
+    repeated = client.post(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/tasks/ready/complete"
+    )
+    assert repeated.status_code == 409
+
+
+def test_node_metadata_dates_tags_and_created_at_are_persisted(client: TestClient):
+    workspace = create_workspace(client)
+    project = create_project(client, workspace["workspaceId"], "Scheduled Project")
+    graph = {
+        "root": {"title": "Scheduled Project", "description": "", "completionCriteria": "", "tags": []},
+        "nodes": [
+            {
+                "id": "scheduled-task",
+                "kind": "task",
+                "title": "Prepare release",
+                "status": "todo",
+                "position": {"x": 0, "y": 0},
+                "tags": ["Delivery.Release.QA"],
+                "doDate": "2026-07-01",
+                "dueDate": "2026-07-04",
+            }
+        ],
+        "edges": [],
+    }
+
+    stored = replace_graph(client, workspace["workspaceId"], project["projectId"], graph)
+    node = stored["project"]["nodes"][0]
+    created_at = node["createdAt"]
+    assert created_at
+    assert node["tags"] == ["Delivery.Release.QA"]
+    assert node["doDate"] == "2026-07-01"
+    assert node["dueDate"] == "2026-07-04"
+
+    graph["nodes"][0]["title"] = "Prepare final release"
+    graph["nodes"][0]["createdAt"] = "2000-01-01T00:00:00Z"
+    stored_again = replace_graph(client, workspace["workspaceId"], project["projectId"], graph)
+    assert stored_again["project"]["nodes"][0]["createdAt"] == created_at
+
+    graph["nodes"][0]["doDate"] = "2026-07-05"
+    invalid = client.post(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/operations",
+        json={"operations": [{"type": "replace_graph", "project": graph}]},
+    )
+    assert invalid.status_code == 422

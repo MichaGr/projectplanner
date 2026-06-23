@@ -25,6 +25,25 @@ export type WorkspaceSummary = {
   projects: StoredProjectSummary[];
 };
 
+export type AvailableTaskScope = 'all' | 'workspace' | 'project';
+
+export type AvailableTaskItem = {
+  workspaceId: string;
+  workspaceName: string;
+  projectId: string;
+  projectTitle: string;
+  taskId: string;
+  title: string;
+};
+
+export type CompleteTaskResponse = {
+  workspaceId: string;
+  projectId: string;
+  taskId: string;
+  status: 'done';
+  graphVersion: number;
+};
+
 export type GraphOperationRequest =
   | { type: 'replace_graph'; project: unknown }
   | {
@@ -87,6 +106,18 @@ const projectUrl = (workspaceId: string, projectId: string) =>
 export const listWorkspaces = async (): Promise<WorkspaceSummary[]> => {
   const response = await fetchWithRetry('/api/workspaces');
   return ensureOk<WorkspaceSummary[]>(response);
+};
+
+export const fetchAvailableTasks = async (scope: {
+  mode: AvailableTaskScope;
+  workspaceId?: string;
+  projectId?: string;
+}): Promise<AvailableTaskItem[]> => {
+  const params = new URLSearchParams({ scope: scope.mode });
+  if (scope.workspaceId) params.set('workspaceId', scope.workspaceId);
+  if (scope.projectId) params.set('projectId', scope.projectId);
+  const response = await fetchWithRetry(`/api/available-tasks?${params.toString()}`);
+  return ensureOk<AvailableTaskItem[]>(response);
 };
 
 export const createWorkspace = async (payload: { name: string; description?: string }): Promise<WorkspaceSummary> => {
@@ -153,6 +184,18 @@ export const deleteProject = async (
 ): Promise<{ deletedProjectId: string }> => {
   const response = await fetch(projectUrl(workspaceId, projectId), { method: 'DELETE' });
   return ensureOk(response);
+};
+
+export const completeAvailableTask = async (
+  workspaceId: string,
+  projectId: string,
+  taskId: string,
+): Promise<CompleteTaskResponse> => {
+  const response = await fetch(
+    `${projectUrl(workspaceId, projectId)}/tasks/${encodeURIComponent(taskId)}/complete`,
+    { method: 'POST' },
+  );
+  return ensureOk<CompleteTaskResponse>(response);
 };
 
 export const applyProjectGraphOperations = async (

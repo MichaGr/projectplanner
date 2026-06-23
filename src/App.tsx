@@ -20,11 +20,15 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   applyProjectGraphOperations,
+  AvailableTaskItem,
+  AvailableTaskScope,
   checkWorkflowService,
+  completeAvailableTask,
   createWorkspace,
   createProjectGraph,
   deleteProject,
   deleteWorkspace,
+  fetchAvailableTasks,
   fetchProjectGraph,
   listWorkspaces,
   updateProject,
@@ -39,7 +43,11 @@ import {
   GitFork,
   Menu,
   MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRight,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil,
   Plus,
   Search,
@@ -56,6 +64,7 @@ type TaskStatus = 'todo' | 'done';
 type ScopeId = string | null;
 type ThemeMode = 'dark' | 'light';
 type EditableNodeField = 'description' | 'completionCriteria';
+type EditableNodeDateField = 'dueDate' | 'doDate';
 type EditableRootField = 'title' | 'description' | 'completionCriteria';
 
 type PlannerNodeRecord = {
@@ -67,6 +76,9 @@ type PlannerNodeRecord = {
   description: string;
   completionCriteria: string;
   tags: string[];
+  createdAt?: string;
+  dueDate?: string | null;
+  doDate?: string | null;
   parentId?: string;
   size?: { width: number; height: number };
 };
@@ -177,10 +189,20 @@ type JournalEntryBase = {
 };
 
 type BackendStatus = 'checking' | 'online' | 'offline';
+type TaskScopePreference = {
+  mode: AvailableTaskScope;
+};
+type TransientNotification = {
+  id: number;
+  message: string;
+  tone: 'info' | 'error';
+};
 
 const STORAGE_KEY = 'project-planner-state-v2';
 const THEME_STORAGE_KEY = 'project-planner-theme-v1';
 const RIGHT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-right-panel-width-v2';
+const PANEL_PREFERENCES_STORAGE_KEY = 'project-planner-panels-v1';
+const TASK_SCOPE_STORAGE_KEY = 'project-planner-task-scope-v1';
 const mainTab: TabDescriptor = { id: 'main', kind: 'main' };
 const groupSize = { width: 280, height: 132 };
 const taskSize = { width: 210, height: 88 };
@@ -484,6 +506,16 @@ const normalizeTag = (value: string) =>
     .filter(Boolean)
     .join('.');
 
+const normalizeDateOnly = (value: unknown) =>
+  typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+
+const formatCreatedAt = (value?: string) => {
+  if (!value) return 'Pending save';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Unknown';
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(parsed);
+};
+
 const getNodeScope = (node: PlannerNodeRecord): ScopeId => node.parentId ?? null;
 
 const isSameScope = (nodes: PlannerNodeRecord[], sourceId: string, targetId: string) => {
@@ -514,6 +546,9 @@ const sanitizeSnapshot = (snapshot: PlannerSnapshot): PlannerSnapshot => {
     const legacyNode = node as PlannerNodeRecord & {
       acceptanceCriteria?: string;
       tags?: unknown;
+      createdAt?: unknown;
+      dueDate?: unknown;
+      doDate?: unknown;
     };
 
     return {
@@ -523,6 +558,9 @@ const sanitizeSnapshot = (snapshot: PlannerSnapshot): PlannerSnapshot => {
       tags: Array.isArray(legacyNode.tags)
         ? legacyNode.tags.map((tag) => normalizeTag(String(tag))).filter(Boolean)
         : [],
+      createdAt: typeof legacyNode.createdAt === 'string' ? legacyNode.createdAt : undefined,
+      dueDate: normalizeDateOnly(legacyNode.dueDate),
+      doDate: normalizeDateOnly(legacyNode.doDate),
     };
   });
 
@@ -1276,16 +1314,57 @@ const getStoredTheme = (): ThemeMode => {
   return 'dark';
 };
 
-const clampRightPanelWidth = (value: number) => Math.min(420, Math.max(260, value));
+const clampLeftPanelWidth = (value: number) => Math.min(420, Math.max(220, value));
+const clampRightPanelWidth = (value: number) => Math.min(480, Math.max(260, value));
 
-const getStoredRightPanelWidth = () => {
+const getStoredPanelPreferences = () => {
   if (typeof window === 'undefined') {
-    return 300;
+    return { leftWidth: 260, rightWidth: 300, leftVisible: true, rightVisible: true };
   }
 
+  const preferences = window.localStorage.getItem(PANEL_PREFERENCES_STORAGE_KEY);
+  if (preferences) {
+    try {
+      const parsed = JSON.parse(preferences) as Partial<{
+        leftWidth: number;
+        rightWidth: number;
+        leftVisible: boolean;
+        rightVisible: boolean;
+      }>;
+      return {
+        leftWidth: clampLeftPanelWidth(typeof parsed.leftWidth === 'number' ? parsed.leftWidth : 260),
+        rightWidth: clampRightPanelWidth(typeof parsed.rightWidth === 'number' ? parsed.rightWidth : 300),
+        leftVisible: parsed.leftVisible !== false,
+        rightVisible: parsed.rightVisible !== false,
+      };
+    } catch {
+      // Fall through to the legacy right-panel preference.
+    }
+  }
   const raw = window.localStorage.getItem(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const parsed = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(parsed) ? clampRightPanelWidth(parsed) : 300;
+  return {
+    leftWidth: 260,
+    rightWidth: Number.isFinite(parsed) ? clampRightPanelWidth(parsed) : 300,
+    leftVisible: true,
+    rightVisible: true,
+  };
+};
+
+const getStoredTaskScope = (): TaskScopePreference => {
+  if (typeof window === 'undefined') {
+    return { mode: 'project' };
+  }
+  const raw = window.localStorage.getItem(TASK_SCOPE_STORAGE_KEY);
+  if (!raw) return { mode: 'project' };
+  try {
+    const parsed = JSON.parse(raw) as Partial<TaskScopePreference>;
+    const mode: AvailableTaskScope =
+      parsed.mode === 'all' || parsed.mode === 'workspace' || parsed.mode === 'project' ? parsed.mode : 'project';
+    return { mode };
+  } catch {
+    return { mode: 'project' };
+  }
 };
 
 const nextAvailableOffset = (nodes: PlannerNodeRecord[], parentId?: string) => {
@@ -1481,7 +1560,9 @@ const TagTree = ({
           ].join(' ')}
           onClick={() => (node.isTag ? onToggle(node.path) : undefined)}
         >
-          <span className="tag-tree__caret">{node.children.length > 0 ? '▾' : '·'}</span>
+          <span className="tag-tree__caret" aria-hidden="true">
+            {node.children.length > 0 ? <ChevronDown /> : null}
+          </span>
           <span>{node.label}</span>
         </button>
         {node.children.length > 0 ? (
@@ -1509,7 +1590,7 @@ function PlannerApp() {
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-  const [fileFeedback, setFileFeedback] = useState<string | null>(null);
+  const [notification, setNotification] = useState<TransientNotification | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [tagQuery, setTagQuery] = useState('');
   const [shouldFocusSelectedTitle, setShouldFocusSelectedTitle] = useState(false);
@@ -1526,14 +1607,22 @@ function PlannerApp() {
   const [loadingStoredProjectId, setLoadingStoredProjectId] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking');
   const [sessionJournal, setSessionJournal] = useState<SessionJournalEntry[]>([]);
-  const [rightPanelWidth, setRightPanelWidth] = useState(() => getStoredRightPanelWidth());
+  const [panelPreferences, setPanelPreferences] = useState(() => getStoredPanelPreferences());
+  const [taskScope, setTaskScope] = useState<TaskScopePreference>(() => getStoredTaskScope());
+  const [availableTasks, setAvailableTasks] = useState<AvailableTaskItem[]>([]);
+  const [isAvailableTasksLoading, setIsAvailableTasksLoading] = useState(false);
+  const [availableTasksError, setAvailableTasksError] = useState<string | null>(null);
+  const [availableTasksRefreshKey, setAvailableTasksRefreshKey] = useState(0);
+  const [completingTaskKey, setCompletingTaskKey] = useState<string | null>(null);
   const [dragDropTarget, setDragDropTarget] = useState<NodeDropTarget>(null);
   const [dragPreviewNodeId, setDragPreviewNodeId] = useState<string | null>(null);
   const [flowViewport, setFlowViewport] = useState({ x: 0, y: 0, zoom: 1 });
   const [isCanvasPointerDown, setIsCanvasPointerDown] = useState(false);
   const [isProjectGraphLoading, setIsProjectGraphLoading] = useState(true);
   const [graphSyncError, setGraphSyncError] = useState<string | null>(null);
-  const isResizingPanelRef = useRef(false);
+  const resizingPanelRef = useRef<'left' | 'right' | null>(null);
+  const notificationIdRef = useRef(0);
+  const availableTasksRequestRef = useRef(0);
   const canvasNodesRef = useRef<PlannerFlowNode[]>([]);
   const snapshotRef = useRef(snapshot);
   const workspaceIdRef = useRef(workspaceId);
@@ -1546,6 +1635,11 @@ function PlannerApp() {
   const syncResolveRef = useRef<(() => void) | null>(null);
   const lastSyncedSnapshotRef = useRef(serializeSnapshot(snapshot));
   const activeScopeId: ScopeId = activeTabId === 'main' ? null : activeTabId;
+
+  const showNotification = useCallback((message: string, tone: TransientNotification['tone'] = 'info') => {
+    notificationIdRef.current += 1;
+    setNotification({ id: notificationIdRef.current, message, tone });
+  }, []);
 
   const appendSessionJournal = useCallback((entry: SessionJournalEntry | SessionJournalEntry[]) => {
     const nextEntries = Array.isArray(entry) ? entry : [entry];
@@ -1591,8 +1685,21 @@ function PlannerApp() {
   }, [themeMode]);
 
   useEffect(() => {
-    window.localStorage.setItem(RIGHT_PANEL_WIDTH_STORAGE_KEY, String(rightPanelWidth));
-  }, [rightPanelWidth]);
+    window.localStorage.setItem(PANEL_PREFERENCES_STORAGE_KEY, JSON.stringify(panelPreferences));
+  }, [panelPreferences]);
+
+  useEffect(() => {
+    window.localStorage.setItem(TASK_SCOPE_STORAGE_KEY, JSON.stringify(taskScope));
+  }, [taskScope]);
+
+  useEffect(() => {
+    if (!notification) return;
+    const notificationId = notification.id;
+    const timer = window.setTimeout(() => {
+      setNotification((current) => (current?.id === notificationId ? null : current));
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [notification]);
 
   useEffect(() => {
     snapshotRef.current = snapshot;
@@ -1644,7 +1751,7 @@ function PlannerApp() {
       ]);
 
       applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
-      setFileFeedback(null);
+      setAvailableTasksRefreshKey((current) => current + 1);
     },
     [applyServerProjectGraph],
   );
@@ -1811,12 +1918,6 @@ function PlannerApp() {
   }, [activeTabId, selectedNodeId]);
 
   useEffect(() => {
-    if (isSettingsOpen) {
-      setFileFeedback(null);
-    }
-  }, [isSettingsOpen]);
-
-  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       setIsWorkspaceMenuOpen(false);
@@ -1830,16 +1931,21 @@ function PlannerApp() {
 
   useEffect(() => {
     const handlePointerMove = (event: MouseEvent) => {
-      if (!isResizingPanelRef.current) {
+      if (!resizingPanelRef.current) {
         return;
       }
 
-      const nextWidth = clampRightPanelWidth(window.innerWidth - event.clientX);
-      setRightPanelWidth(nextWidth);
+      if (resizingPanelRef.current === 'left') {
+        const nextWidth = clampLeftPanelWidth(event.clientX);
+        setPanelPreferences((current) => ({ ...current, leftWidth: nextWidth }));
+      } else {
+        const nextWidth = clampRightPanelWidth(window.innerWidth - event.clientX);
+        setPanelPreferences((current) => ({ ...current, rightWidth: nextWidth }));
+      }
     };
 
     const handlePointerUp = () => {
-      isResizingPanelRef.current = false;
+      resizingPanelRef.current = null;
       document.body.classList.remove('is-panel-resizing');
     };
 
@@ -1960,10 +2066,40 @@ function PlannerApp() {
     setFlowViewport(getViewport());
   }, [getViewport, canvasNodes.length, activeTabId]);
 
-  const availableTasks = useMemo(
-    () => snapshot.nodes.filter((node) => isTaskAvailable(snapshot.nodes, snapshot.edges, node)),
-    [snapshot.nodes, snapshot.edges],
-  );
+  const resolvedTaskScope = useMemo(() => {
+    if (taskScope.mode === 'all') {
+      return { mode: 'all' as const };
+    }
+    if (taskScope.mode === 'workspace') {
+      return workspaceId ? { mode: 'workspace' as const, workspaceId } : null;
+    }
+    return workspaceId && projectId ? { mode: 'project' as const, workspaceId, projectId } : null;
+  }, [projectId, taskScope.mode, workspaceId]);
+
+  useEffect(() => {
+    const requestId = availableTasksRequestRef.current + 1;
+    availableTasksRequestRef.current = requestId;
+    if (!resolvedTaskScope) {
+      setAvailableTasks([]);
+      setAvailableTasksError(null);
+      return;
+    }
+
+    setIsAvailableTasksLoading(true);
+    setAvailableTasksError(null);
+    void fetchAvailableTasks(resolvedTaskScope)
+      .then((tasks) => {
+        if (availableTasksRequestRef.current === requestId) setAvailableTasks(tasks);
+      })
+      .catch((error) => {
+        if (availableTasksRequestRef.current !== requestId) return;
+        setAvailableTasks([]);
+        setAvailableTasksError(error instanceof Error ? error.message : 'Could not load available tasks.');
+      })
+      .finally(() => {
+        if (availableTasksRequestRef.current === requestId) setIsAvailableTasksLoading(false);
+      });
+  }, [availableTasksRefreshKey, resolvedTaskScope]);
 
   const groupSelectedItems = useCallback(
     (nodeIds: string[]) => {
@@ -2029,6 +2165,9 @@ function PlannerApp() {
               description: '',
               completionCriteria: '',
               tags: [],
+              createdAt: new Date().toISOString(),
+              dueDate: null,
+              doDate: null,
               parentId: commonParentId,
               size: { ...groupSize },
             },
@@ -2397,6 +2536,9 @@ function PlannerApp() {
           description: '',
           completionCriteria: '',
           tags: [],
+          createdAt: new Date().toISOString(),
+          dueDate: null,
+          doDate: null,
           parentId: activeScopeId ?? undefined,
         };
         newNodeTitle = newNode.title;
@@ -2496,6 +2638,9 @@ function PlannerApp() {
           description: node.description,
           completionCriteria: node.completionCriteria,
           tags: [...(node.tags ?? [])],
+          createdAt: new Date().toISOString(),
+          dueDate: node.dueDate ?? null,
+          doDate: node.doDate ?? null,
           parentId: node.id,
         },
       ];
@@ -2608,6 +2753,9 @@ function PlannerApp() {
         description: '',
         completionCriteria: '',
         tags: [],
+        createdAt: new Date().toISOString(),
+        dueDate: null,
+        doDate: null,
         parentId: sharedParentId,
         size: { ...groupSize },
       };
@@ -2661,6 +2809,15 @@ function PlannerApp() {
     setSelectedEdgeId(null);
   }, []);
 
+  const setNodeDate = useCallback((nodeId: string, field: EditableNodeDateField, value: string) => {
+    setSnapshot((current) => ({
+      ...current,
+      nodes: current.nodes.map((node) =>
+        node.id === nodeId ? { ...node, [field]: normalizeDateOnly(value) } : node,
+      ),
+    }));
+  }, []);
+
   const showEmptyWorkspace = useCallback((nextWorkspaceId: string) => {
     const emptySnapshot = blankSnapshot();
     isApplyingServerSnapshotRef.current = true;
@@ -2683,11 +2840,11 @@ function PlannerApp() {
       applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
       resetProjectUi();
       await loadWorkspaceTree();
-      setFileFeedback('Started a new blank project.');
+      showNotification('Started a new blank project.');
     } catch (error) {
       setGraphSyncError(error instanceof Error ? error.message : 'Could not create a new project.');
     }
-  }, [applyServerProjectGraph, flushProjectGraphSync, loadWorkspaceTree, resetProjectUi, workspaceId]);
+  }, [applyServerProjectGraph, flushProjectGraphSync, loadWorkspaceTree, resetProjectUi, showNotification, workspaceId]);
 
   const openStoredProject = useCallback(
     async (nextWorkspaceId: string, nextProjectId: string) => {
@@ -2695,7 +2852,7 @@ function PlannerApp() {
         setIsWorkspaceMenuOpen(false);
         setIsProjectMenuOpen(false);
         setIsLeftDrawerOpen(false);
-        return;
+        return snapshotRef.current;
       }
       setLoadingStoredProjectId(nextProjectId);
       setWorkspaceTreeError(null);
@@ -2703,24 +2860,65 @@ function PlannerApp() {
       try {
         await flushProjectGraphSync();
         const response = await fetchProjectGraph(nextWorkspaceId, nextProjectId);
-        applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+        const loadedSnapshot = sanitizeSnapshot(response.project as PlannerSnapshot);
+        applyServerProjectGraph(response.workspaceId, response.projectId, loadedSnapshot);
         resetProjectUi();
         setIsWorkspaceMenuOpen(false);
         setIsProjectMenuOpen(false);
         setIsLeftDrawerOpen(false);
-        setFileFeedback(`Loaded ${sanitizeSnapshot(response.project as PlannerSnapshot).root.title} from the database.`);
+        showNotification(`Loaded ${loadedSnapshot.root.title} from the database.`);
         window.requestAnimationFrame(() => {
           window.requestAnimationFrame(() => {
             fitCurrentGraph();
           });
         });
+        return loadedSnapshot;
       } catch (error) {
         setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not load the selected project.');
+        return null;
       } finally {
         setLoadingStoredProjectId(null);
       }
     },
-    [applyServerProjectGraph, fitCurrentGraph, flushProjectGraphSync, projectId, resetProjectUi, workspaceId],
+    [applyServerProjectGraph, fitCurrentGraph, flushProjectGraphSync, projectId, resetProjectUi, showNotification, workspaceId],
+  );
+
+  const openAvailableTask = useCallback(
+    async (task: AvailableTaskItem) => {
+      const loadedSnapshot = await openStoredProject(task.workspaceId, task.projectId);
+      const node = loadedSnapshot?.nodes.find((entry) => entry.id === task.taskId);
+      if (node) focusNodeInWorkspace(node);
+      setIsLeftDrawerOpen(false);
+    },
+    [focusNodeInWorkspace, openStoredProject],
+  );
+
+  const markAvailableTaskComplete = useCallback(
+    async (task: AvailableTaskItem) => {
+      const taskKey = `${task.workspaceId}:${task.projectId}:${task.taskId}`;
+      setCompletingTaskKey(taskKey);
+      try {
+        if (task.workspaceId === workspaceIdRef.current && task.projectId === projectIdRef.current) {
+          await flushProjectGraphSync();
+        }
+        await completeAvailableTask(task.workspaceId, task.projectId, task.taskId);
+        setAvailableTasks((current) => current.filter((entry) => entry.taskId !== task.taskId || entry.projectId !== task.projectId));
+
+        if (task.workspaceId === workspaceIdRef.current && task.projectId === projectIdRef.current) {
+          const response = await fetchProjectGraph(task.workspaceId, task.projectId);
+          applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+        }
+        await loadWorkspaceTree();
+        setAvailableTasksRefreshKey((current) => current + 1);
+        showNotification(`Completed ${task.title}.`);
+      } catch (error) {
+        showNotification(error instanceof Error ? error.message : 'Could not complete the task.', 'error');
+        setAvailableTasksRefreshKey((current) => current + 1);
+      } finally {
+        setCompletingTaskKey(null);
+      }
+    },
+    [applyServerProjectGraph, flushProjectGraphSync, loadWorkspaceTree, showNotification],
   );
 
   const selectWorkspace = useCallback(async (nextWorkspaceId: string) => {
@@ -2994,9 +3192,9 @@ function PlannerApp() {
       setToolbarNodeId(null);
       setSelectedEdgeId(null);
       await loadWorkspaceTree();
-      setFileFeedback('Imported a new project from file.');
+      showNotification('Imported a new project from file.');
     },
-    [applyServerProjectGraph, flushProjectGraphSync, loadWorkspaceTree, workspaceId],
+    [applyServerProjectGraph, flushProjectGraphSync, loadWorkspaceTree, showNotification, workspaceId],
   );
 
   const handleLoadFile = useCallback(
@@ -3019,12 +3217,12 @@ function PlannerApp() {
 
         await applyLoadedProject(normalized);
       } catch {
-        setFileFeedback('Could not load that file. Please choose a valid project export or planner snapshot JSON file.');
+        showNotification('Could not load that file. Please choose a valid project export or planner snapshot JSON file.', 'error');
       } finally {
         event.target.value = '';
       }
     },
-    [applyLoadedProject],
+    [applyLoadedProject, showNotification],
   );
 
   const breadcrumbs =
@@ -3042,8 +3240,48 @@ function PlannerApp() {
 
   return (
     <>
-      <div className="app-frame" style={{ '--properties-width': `${rightPanelWidth}px` } as CSSProperties}>
-        <aside className={['editor-sidebar', isLeftDrawerOpen ? 'is-open' : ''].join(' ')} aria-label="Project navigation">
+      <div
+        className="app-frame"
+        style={
+          {
+            '--navigation-width': `${panelPreferences.leftWidth}px`,
+            '--navigation-column': panelPreferences.leftVisible ? `${panelPreferences.leftWidth}px` : '0px',
+            '--properties-width': `${panelPreferences.rightWidth}px`,
+            '--properties-column': panelPreferences.rightVisible ? `${panelPreferences.rightWidth}px` : '0px',
+          } as CSSProperties
+        }
+      >
+        <aside
+          className={[
+            'editor-sidebar',
+            isLeftDrawerOpen ? 'is-open' : '',
+            !panelPreferences.leftVisible ? 'is-desktop-hidden' : '',
+          ].join(' ')}
+          aria-label="Project navigation"
+        >
+          <div
+            className="panel-resizer editor-sidebar__resizer"
+            role="separator"
+            aria-label="Resize project navigation"
+            aria-orientation="vertical"
+            aria-valuemin={220}
+            aria-valuemax={420}
+            aria-valuenow={panelPreferences.leftWidth}
+            tabIndex={0}
+            onMouseDown={() => {
+              resizingPanelRef.current = 'left';
+              document.body.classList.add('is-panel-resizing');
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+              event.preventDefault();
+              const delta = event.key === 'ArrowLeft' ? -10 : 10;
+              setPanelPreferences((current) => ({
+                ...current,
+                leftWidth: clampLeftPanelWidth(current.leftWidth + delta),
+              }));
+            }}
+          />
           <div className="editor-sidebar__primary">
             <button
               type="button"
@@ -3241,32 +3479,52 @@ function PlannerApp() {
           </div>
 
           <div className="sidebar-section available-tasks-section">
+            <div className="task-scope-controls">
+              <label>
+                <span>Task source</span>
+                <select
+                  value={taskScope.mode}
+                  onChange={(event) => setTaskScope({ mode: event.target.value as AvailableTaskScope })}
+                >
+                  <option value="all">All workspaces</option>
+                  <option value="workspace">Current workspace</option>
+                  <option value="project">Current project</option>
+                </select>
+              </label>
+            </div>
             <div className="sidebar-section__header">
               <span className="sidebar-section__label">Available Tasks</span>
               <span className="sidebar-section__count">{availableTasks.length}</span>
             </div>
             <div className="available-task-list">
-              {projectId && availableTasks.length === 0 ? (
+              {isAvailableTasksLoading ? (
+                <p className="sidebar-empty">Loading available tasks...</p>
+              ) : availableTasksError ? (
+                <p className="sidebar-empty is-error">{availableTasksError}</p>
+              ) : resolvedTaskScope && availableTasks.length === 0 ? (
                 <p className="sidebar-empty">No tasks are currently available.</p>
-              ) : !projectId ? (
-                <p className="sidebar-empty">Select a project to see available tasks.</p>
+              ) : !resolvedTaskScope ? (
+                <p className="sidebar-empty">Select a workspace or project to see available tasks.</p>
               ) : (
                 availableTasks.map((task) => (
-                  <div key={task.id} className="available-task-row">
+                  <div key={`${task.workspaceId}:${task.projectId}:${task.taskId}`} className="available-task-row">
                     <button
                       type="button"
                       className="available-task-row__focus"
-                      onClick={() => {
-                        focusNodeInWorkspace(task);
-                        setIsLeftDrawerOpen(false);
-                      }}
+                      onClick={() => void openAvailableTask(task)}
                     >
                       <span>{task.title}</span>
+                      {taskScope.mode !== 'project' ? (
+                        <small>
+                          {taskScope.mode === 'all' ? `${task.workspaceName} / ` : ''}{task.projectTitle}
+                        </small>
+                      ) : null}
                     </button>
                     <button
                       type="button"
                       className="available-task-row__check"
-                      onClick={() => toggleTaskStatus(task.id)}
+                      onClick={() => void markAvailableTaskComplete(task)}
+                      disabled={completingTaskKey === `${task.workspaceId}:${task.projectId}:${task.taskId}`}
                       aria-label={`Mark ${task.title} complete`}
                       title="Mark complete"
                     >
@@ -3317,12 +3575,6 @@ function PlannerApp() {
           />
 
           <section className="workspace workspace--floating">
-            {isProjectGraphLoading || graphSyncError || fileFeedback ? (
-              <p className={['feedback floating-feedback', graphSyncError ? 'feedback--error' : ''].join(' ')}>
-                {isProjectGraphLoading ? 'Loading workflow...' : graphSyncError ?? fileFeedback}
-              </p>
-            ) : null}
-
             <div className="mobile-editor-controls" aria-label="Editor panels">
               <button
                 type="button"
@@ -3361,7 +3613,7 @@ function PlannerApp() {
                   }
                   setIsCanvasPointerDown(true);
                 }}
-                onDoubleClick={(event: ReactMouseEvent<HTMLElement>) => {
+              onDoubleClick={(event: ReactMouseEvent<HTMLElement>) => {
                   const target = event.target as HTMLElement;
                   if (target.closest('.react-flow__node') || !target.closest('.react-flow__pane')) {
                     return;
@@ -3374,6 +3626,38 @@ function PlannerApp() {
                   addTask(position);
                 }}
               >
+                <div className="desktop-panel-controls" aria-label="Editor panels">
+                  <button
+                    type="button"
+                    onClick={() => setPanelPreferences((current) => ({ ...current, leftVisible: !current.leftVisible }))}
+                    aria-label={panelPreferences.leftVisible ? 'Hide project navigation' : 'Show project navigation'}
+                    aria-expanded={panelPreferences.leftVisible}
+                    title={panelPreferences.leftVisible ? 'Hide project navigation' : 'Show project navigation'}
+                  >
+                    {panelPreferences.leftVisible ? <PanelLeftClose aria-hidden="true" /> : <PanelLeftOpen aria-hidden="true" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPanelPreferences((current) => ({ ...current, rightVisible: !current.rightVisible }))}
+                    aria-label={panelPreferences.rightVisible ? 'Hide inspector' : 'Show inspector'}
+                    aria-expanded={panelPreferences.rightVisible}
+                    title={panelPreferences.rightVisible ? 'Hide inspector' : 'Show inspector'}
+                  >
+                    {panelPreferences.rightVisible ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}
+                  </button>
+                </div>
+                <div className="canvas-status-region" aria-live="polite" aria-atomic="true">
+                  {isProjectGraphLoading ? <p className="feedback floating-feedback">Loading workflow...</p> : null}
+                  {graphSyncError ? <p className="feedback feedback--error floating-feedback">{graphSyncError}</p> : null}
+                  {notification ? (
+                    <p
+                      className={['feedback floating-feedback', notification.tone === 'error' ? 'feedback--error' : ''].join(' ')}
+                      role={notification.tone === 'error' ? 'alert' : 'status'}
+                    >
+                      {notification.message}
+                    </p>
+                  ) : null}
+                </div>
                 <ParticleGridBackground />
                 <div className="canvas-shell__overlay">
                   {multiSelectionButtonStyle && !isCanvasPointerDown ? (
@@ -3530,15 +3814,36 @@ function PlannerApp() {
                 </ReactFlow>
               </main>
 
-              <aside className={['editor-inspector', isRightDrawerOpen ? 'is-open' : ''].join(' ')} aria-label="Node inspector">
-                  <button
-                    type="button"
+              <aside
+                className={[
+                  'editor-inspector',
+                  isRightDrawerOpen ? 'is-open' : '',
+                  !panelPreferences.rightVisible ? 'is-desktop-hidden' : '',
+                ].join(' ')}
+                aria-label="Node inspector"
+              >
+                  <div
                     className="panel-resizer editor-inspector__resizer"
+                    role="separator"
+                    aria-orientation="vertical"
                     onMouseDown={() => {
-                      isResizingPanelRef.current = true;
+                      resizingPanelRef.current = 'right';
                       document.body.classList.add('is-panel-resizing');
                     }}
                     aria-label="Resize node information panel"
+                    aria-valuemin={260}
+                    aria-valuemax={480}
+                    aria-valuenow={panelPreferences.rightWidth}
+                    tabIndex={0}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                      event.preventDefault();
+                      const delta = event.key === 'ArrowLeft' ? 10 : -10;
+                      setPanelPreferences((current) => ({
+                        ...current,
+                        rightWidth: clampRightPanelWidth(current.rightWidth + delta),
+                      }));
+                    }}
                   />
                   <div className="editor-inspector__header">
                     <div>
@@ -3594,6 +3899,85 @@ function PlannerApp() {
                             onBlur={handleInspectorFieldBlur}
                           />
                         </label>
+                        <div className="node-date-grid">
+                          <label className="glass-field">
+                            Do Date
+                            <input
+                              type="date"
+                              value={panelItem.doDate ?? ''}
+                              max={panelItem.dueDate ?? undefined}
+                              onChange={(event) => setNodeDate(panelItem.id, 'doDate', event.target.value)}
+                            />
+                          </label>
+                          <label className="glass-field">
+                            Due Date
+                            <input
+                              type="date"
+                              value={panelItem.dueDate ?? ''}
+                              min={panelItem.doDate ?? undefined}
+                              onChange={(event) => setNodeDate(panelItem.id, 'dueDate', event.target.value)}
+                            />
+                          </label>
+                        </div>
+                        <div className="node-created-field">
+                          <span>Created</span>
+                          <time dateTime={panelItem.createdAt}>{formatCreatedAt(panelItem.createdAt)}</time>
+                        </div>
+                        <section className="node-tag-editor" aria-label="Node tags">
+                          <div className="node-tag-editor__header">
+                            <span>Tags</span>
+                            <small>{panelTags.length}</small>
+                          </div>
+                          {panelTags.length > 0 ? (
+                            <div className="tag-chip-list">
+                              {panelTags.map((tag) => (
+                                <button
+                                  key={tag}
+                                  type="button"
+                                  className="tag-chip"
+                                  onClick={() => togglePanelTag(tag)}
+                                  aria-label={`Remove tag ${tag}`}
+                                  title="Remove tag"
+                                >
+                                  <span>{tag}</span>
+                                  <X aria-hidden="true" />
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                          <div className="node-tag-editor__controls">
+                            <input
+                              value={tagQuery}
+                              onChange={(event) => setTagQuery(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' && canCreateTag) {
+                                  event.preventDefault();
+                                  createTagFromQuery();
+                                }
+                              }}
+                              placeholder="Tag.Path"
+                              aria-label="Tag path"
+                            />
+                            <button
+                              type="button"
+                              onClick={createTagFromQuery}
+                              disabled={!canCreateTag}
+                              aria-label="Create tag path"
+                              title="Create tag path"
+                            >
+                              <Plus aria-hidden="true" />
+                            </button>
+                          </div>
+                          {visibleTagTree.length > 0 ? (
+                            <div className="tag-browser">
+                              <TagTree nodes={visibleTagTree} selectedTags={panelTags} onToggle={togglePanelTag} />
+                            </div>
+                          ) : tagQuery ? (
+                            <p className="node-tag-editor__empty">Press Enter to create this tag path.</p>
+                          ) : (
+                            <p className="node-tag-editor__empty">No tags in this project yet.</p>
+                          )}
+                        </section>
                       </>
                     ) : (
                       <div className="glass-card">
