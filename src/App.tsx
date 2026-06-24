@@ -1,18 +1,10 @@
 import { CSSProperties, ChangeEvent, MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   applyNodeChanges,
-  BaseEdge,
   Connection,
-  Edge,
-  EdgeProps,
-  Handle,
-  MiniMap,
-  Node,
   NodeChange,
-  NodeProps,
   PanOnScrollMode,
   SelectionMode,
-  Position,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
@@ -37,166 +29,82 @@ import {
 } from './api';
 import {
   Check,
-  ChevronDown,
-  Download,
-  ExternalLink,
-  GitFork,
   Menu,
-  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRight,
   PanelRightClose,
   PanelRightOpen,
-  Pencil,
   Plus,
-  Search,
   Settings,
-  Trash2,
-  TriangleAlert,
-  Upload,
   X,
-  type LucideIcon,
 } from 'lucide-react';
-
-type PlannerNodeKind = 'task' | 'group';
-type TaskStatus = 'todo' | 'done';
-type ScopeId = string | null;
-type ThemeMode = 'dark' | 'light';
-type EditableNodeField = 'description' | 'completionCriteria';
-type EditableNodeDateField = 'dueDate' | 'doDate';
-type EditableRootField = 'title' | 'description' | 'completionCriteria';
-
-type PlannerNodeRecord = {
-  id: string;
-  kind: PlannerNodeKind;
-  title: string;
-  status: TaskStatus;
-  position: { x: number; y: number };
-  description: string;
-  completionCriteria: string;
-  tags: string[];
-  createdAt?: string;
-  dueDate?: string | null;
-  doDate?: string | null;
-  parentId?: string;
-  size?: { width: number; height: number };
-};
-
-type PlannerEdgeRecord = {
-  id: string;
-  source: string;
-  target: string;
-};
-
-type PlannerSnapshot = {
-  root: {
-    title: string;
-    description: string;
-    completionCriteria: string;
-    tags: string[];
-  };
-  nodes: PlannerNodeRecord[];
-  edges: PlannerEdgeRecord[];
-};
-
-type TabDescriptor =
-  | { id: 'main'; kind: 'main' }
-  | { id: string; kind: 'group' };
-
-type ProjectFileV1 = {
-  version: 1 | 2 | 3;
-  workspaceId?: string;
-  projectId?: string;
-  project: PlannerSnapshot;
-  ui: {
-    openTabs: TabDescriptor[];
-    activeTabId: string;
-    selectedNodeId: string | null;
-  };
-};
-
-type ImportableProjectFile =
-  | ProjectFileV1
-  | PlannerSnapshot
-  | {
-      projectId?: string;
-      project: PlannerSnapshot;
-    };
-
-type RenderNodeData = {
-  title: string;
-  kind: PlannerNodeKind;
-  status: TaskStatus;
-  isAvailable: boolean;
-  isBlocked: boolean;
-  isDropTarget: boolean;
-  isEmptyGroup?: boolean;
-  completionLabel?: string;
-  progressPercent?: number;
-  childSummary?: string;
-  onToggleComplete: () => void;
-  onSplit: () => void;
-  onOpen: () => void;
-  onDelete: () => void;
-  canToggleComplete: boolean;
-  canSplit: boolean;
-  canOpen: boolean;
-  showActions: boolean;
-};
-
-type PlannerFlowNode = Node<RenderNodeData, 'plannerTask' | 'plannerGroup'>;
-type NodeDropTarget =
-  | { mode: 'group'; nodeId: string }
-  | { mode: 'combine'; nodeId: string }
-  | null;
-type DragPreviewEdge = {
-  source: string;
-  target: string;
-  path: string;
-};
-type NodeJournalState = {
-  id: string;
-  kind: PlannerNodeKind;
-  title: string;
-  description: string;
-  completionCriteria: string;
-  status: TaskStatus;
-  scopeTitle: string;
-};
-type SessionJournalEntry = JournalEntryBase & {
-  entityKey?: string;
-  initialNodeState?: NodeJournalState;
-  finalNodeState?: NodeJournalState;
-  nodeAction?: 'created' | 'updated' | 'deleted';
-};
-type SessionJournalEntryType =
-  | 'create_node'
-  | 'update_node'
-  | 'update_root'
-  | 'status_change'
-  | 'create_edge'
-  | 'delete_node'
-  | 'delete_edge'
-  | 'apply_proposal';
-
-type JournalEntryBase = {
-  type: SessionJournalEntryType;
-  title: string;
-  detail: string;
-  scopeTitle?: string | null;
-  completed?: boolean;
-};
-
-type BackendStatus = 'checking' | 'online' | 'offline';
-type TaskScopePreference = {
-  mode: AvailableTaskScope;
-};
-type TransientNotification = {
-  id: number;
-  message: string;
-  tone: 'info' | 'error';
-};
+import type {
+  BackendStatus,
+  EditableNodeDateField,
+  EditableNodeField,
+  EditableRootField,
+  ImportableProjectFile,
+  NodeDropTarget,
+  NodeJournalState,
+  PlannerFlowNode,
+  PlannerNodeRecord,
+  PlannerSnapshot,
+  ProjectFileV1,
+  ScopeId,
+  SessionJournalEntry,
+  TabDescriptor,
+  TaskScopePreference,
+  TaskStatus,
+  ThemeMode,
+  TransientNotification,
+} from './features/planner/model/types';
+import {
+  createPlannerGraphIndex,
+  getDescendantNodeIds,
+  getGroupPath,
+  wouldCreateCycle,
+} from './features/planner/model/graph-index';
+import { ParticleGridBackground } from './features/planner/canvas/ParticleGridBackground';
+import { flowEdgeTypes, flowNodeTypes } from './features/planner/canvas/FlowElements';
+import { useDebouncedLocalStorage } from './hooks/useDebouncedLocalStorage';
+import { useStableCallback } from './hooks/useStableCallback';
+import { usePlannerSnapshot } from './features/planner/state/usePlannerSnapshot';
+import { ToolbarIcon } from './components/ToolbarIcon';
+import { TagTree } from './features/planner/components/TagTree';
+import { buildTagTree, getAllKnownTags, matchesTagQuery } from './features/planner/model/tags';
+import { WorkspaceProjectNavigation } from './features/navigation/WorkspaceProjectNavigation';
+import {
+  buildDragPreviewPath,
+  buildFlowEdges,
+  buildFlowNodes,
+  findEdgeIdIntersectingRect,
+  getEdgeIdFromDomElement,
+  getFlowNodeDimensions,
+  getNodeElementFromDragEvent,
+  getRelativeChildPosition,
+  groupSize,
+} from './features/planner/canvas/flow-model';
+import {
+  blankSnapshot,
+  fileNameFromTitle,
+  formatCreatedAt,
+  getNodeScope,
+  getStoredProjectId,
+  getStoredSnapshot,
+  getStoredWorkspaceId,
+  isSameScope,
+  normalizeDateOnly,
+  normalizeImportedProjectFile,
+  normalizeTag,
+  sanitizeProjectFile,
+  sanitizeSnapshot,
+  serializeProjectFile,
+  serializeSnapshot,
+  serializeStoredState,
+  slugify,
+  uid,
+} from './features/planner/model/project';
 
 const STORAGE_KEY = 'project-planner-state-v2';
 const THEME_STORAGE_KEY = 'project-planner-theme-v1';
@@ -204,531 +112,8 @@ const RIGHT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-right-panel-width-v2';
 const PANEL_PREFERENCES_STORAGE_KEY = 'project-planner-panels-v1';
 const TASK_SCOPE_STORAGE_KEY = 'project-planner-task-scope-v1';
 const mainTab: TabDescriptor = { id: 'main', kind: 'main' };
-const groupSize = { width: 280, height: 132 };
-const taskSize = { width: 210, height: 88 };
-const particleGridConfig = {
-  spacing: 26,
-  attractRadius: 148,
-  maxOffset: 22,
-  dotRadius: 0.9,
-  damping: 0.84,
-  homePull: 0.045,
-  attractPull: 0.14,
-};
-
-type ParticlePoint = {
-  homeX: number;
-  homeY: number;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-};
-
-function ParticleGridBackground({ className }: { className?: string }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const host = canvas?.parentElement;
-    if (!canvas || !host) {
-      return;
-    }
-
-    const context = canvas.getContext('2d');
-    if (!context) {
-      return;
-    }
-
-    let animationFrame = 0;
-    let width = 0;
-    let height = 0;
-    let particles: ParticlePoint[] = [];
-    let dpr = 1;
-    const mouse = { x: 0, y: 0, active: false };
-
-    const rebuildParticles = () => {
-      particles = [];
-      const columns = Math.ceil(width / particleGridConfig.spacing) + 4;
-      const rows = Math.ceil(height / particleGridConfig.spacing) + 4;
-      const startX = particleGridConfig.spacing * 0.5;
-      const startY = particleGridConfig.spacing * 0.5;
-
-      for (let row = -2; row < rows - 2; row += 1) {
-        for (let column = -2; column < columns - 2; column += 1) {
-          const homeX = startX + column * particleGridConfig.spacing;
-          const homeY = startY + row * particleGridConfig.spacing;
-          particles.push({
-            homeX,
-            homeY,
-            x: homeX,
-            y: homeY,
-            vx: 0,
-            vy: 0,
-          });
-        }
-      }
-    };
-
-    const resizeCanvas = () => {
-      const bounds = host.getBoundingClientRect();
-      width = Math.max(1, Math.floor(bounds.width));
-      height = Math.max(1, Math.floor(bounds.height));
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-      context.setTransform(dpr, 0, 0, dpr, 0, 0);
-      rebuildParticles();
-    };
-
-    const handlePointerMove = (event: PointerEvent) => {
-      const bounds = host.getBoundingClientRect();
-      mouse.x = event.clientX - bounds.left;
-      mouse.y = event.clientY - bounds.top;
-      mouse.active = true;
-    };
-
-    const handlePointerLeave = () => {
-      mouse.active = false;
-    };
-
-    const render = () => {
-      context.clearRect(0, 0, width, height);
-      context.fillStyle = 'rgba(225, 195, 255, 0.38)';
-      
-      for (const particle of particles) {
-        const homeX = particle.homeX;
-        const homeY = particle.homeY;
-        const homeMouseDx = mouse.x - homeX;
-        const homeMouseDy = mouse.y - homeY;
-        const homeMouseDistance = Math.hypot(homeMouseDx, homeMouseDy);
-
-          let targetX = homeX;
-          let targetY = homeY;
-
-          if (mouse.active && homeMouseDistance < particleGridConfig.attractRadius) {
-            const influence = 1 - homeMouseDistance / particleGridConfig.attractRadius;
-            const offsetScale = Math.min(particleGridConfig.maxOffset, influence * particleGridConfig.maxOffset);
-            const direction = Math.max(homeMouseDistance, 0.001);
-            targetX = homeX + (homeMouseDx / direction) * offsetScale;
-            targetY = homeY + (homeMouseDy / direction) * offsetScale;
-            particle.vx += (targetX - particle.x) * particleGridConfig.attractPull * influence;
-            particle.vy += (targetY - particle.y) * particleGridConfig.attractPull * influence;
-          } else {
-            particle.vx += (targetX - particle.x) * particleGridConfig.homePull;
-            particle.vy += (targetY - particle.y) * particleGridConfig.homePull;
-          }
-
-          particle.vx *= particleGridConfig.damping;
-          particle.vy *= particleGridConfig.damping;
-          particle.x += particle.vx;
-          particle.y += particle.vy;
-
-          context.beginPath();
-          context.arc(particle.x, particle.y, particleGridConfig.dotRadius, 0, Math.PI * 2);
-          context.fill();
-      }
-
-      animationFrame = window.requestAnimationFrame(render);
-    };
-
-    const resizeObserver = new ResizeObserver(() => resizeCanvas());
-    resizeObserver.observe(host);
-    host.addEventListener('pointermove', handlePointerMove);
-    host.addEventListener('pointerleave', handlePointerLeave);
-
-    resizeCanvas();
-    render();
-
-    return () => {
-      window.cancelAnimationFrame(animationFrame);
-      resizeObserver.disconnect();
-      host.removeEventListener('pointermove', handlePointerMove);
-      host.removeEventListener('pointerleave', handlePointerLeave);
-    };
-  }, []);
-
-  return <canvas ref={canvasRef} className={className ?? 'particle-grid'} aria-hidden="true" />;
-}
-
-const seedSnapshot = (): PlannerSnapshot => ({
-  root: {
-    title: 'Main Graph',
-    description: 'Top-level project workflow across the whole plan.',
-    completionCriteria: 'The main delivery path and major grouped workstreams are represented clearly.',
-    tags: ['Planning.Root'],
-  },
-  nodes: [
-    {
-      id: 'vision',
-      kind: 'task',
-      title: 'Define project vision',
-      status: 'done',
-      position: { x: 40, y: 80 },
-      description: 'Align the project around the user problem and the outcome the workflow should support.',
-      completionCriteria: 'Vision statement is agreed and clearly readable by the team.',
-      tags: ['Planning.Strategy'],
-    },
-    {
-      id: 'research',
-      kind: 'task',
-      title: 'Research users',
-      status: 'done',
-      position: { x: 40, y: 280 },
-      description: 'Collect the main needs and constraints from likely users of the planner.',
-      completionCriteria: 'At least a concise list of recurring needs is captured.',
-      tags: ['Research.Users'],
-    },
-    {
-      id: 'architecture',
-      kind: 'task',
-      title: 'Set architecture',
-      status: 'todo',
-      position: { x: 380, y: 180 },
-      description: 'Choose the graph, state, and UI architecture for the first version.',
-      completionCriteria: 'The team can explain how tasks, groups, and dependencies are represented.',
-      tags: ['Planning.Architecture'],
-    },
-    {
-      id: 'prototype',
-      kind: 'group',
-      title: 'Build prototype',
-      status: 'todo',
-      position: { x: 760, y: 130 },
-      description: 'Deliver a working prototype that demonstrates nested task planning.',
-      completionCriteria: 'Core workflow is testable in the browser.',
-      tags: ['Delivery.Prototype'],
-      size: { ...groupSize },
-    },
-    {
-      id: 'ui-shell',
-      kind: 'task',
-      title: 'Create shell UI',
-      status: 'done',
-      position: { x: 60, y: 80 },
-      description: 'Build the main layout with the graph canvas and supporting panels.',
-      completionCriteria: 'Users can view and navigate the planner comfortably.',
-      tags: ['Implementation.UI.Shell'],
-      parentId: 'prototype',
-    },
-    {
-      id: 'workflow',
-      kind: 'group',
-      title: 'Task workflow',
-      status: 'todo',
-      position: { x: 380, y: 80 },
-      description: 'Implement the core graph logic around unlocking and nested decomposition.',
-      completionCriteria: 'Availability and dependency behavior work across nested items.',
-      tags: ['Implementation.Workflow'],
-      parentId: 'prototype',
-      size: { ...groupSize },
-    },
-    {
-      id: 'deps',
-      kind: 'task',
-      title: 'Map dependencies',
-      status: 'done',
-      position: { x: 60, y: 80 },
-      description: 'Support dependency relationships across tasks inside the same scope.',
-      completionCriteria: 'Blocked tasks respond correctly to completed prerequisites.',
-      tags: ['Implementation.Workflow.Dependencies'],
-      parentId: 'workflow',
-    },
-    {
-      id: 'availability',
-      kind: 'task',
-      title: 'Show available work',
-      status: 'todo',
-      position: { x: 380, y: 80 },
-      description: 'Expose which tasks can be worked on right now.',
-      completionCriteria: 'The available tasks panel updates correctly when statuses change.',
-      tags: ['Implementation.Workflow.Availability'],
-      parentId: 'workflow',
-    },
-    {
-      id: 'qa',
-      kind: 'task',
-      title: 'QA review',
-      status: 'todo',
-      position: { x: 1120, y: 80 },
-      description: 'Review the prototype flow and edge cases before release.',
-      completionCriteria: 'Critical workflow issues are identified and documented.',
-      tags: ['QA.Review'],
-    },
-    {
-      id: 'launch',
-      kind: 'task',
-      title: 'Launch prep',
-      status: 'todo',
-      position: { x: 1120, y: 280 },
-      description: 'Prepare the prototype for a clean handoff or demo.',
-      completionCriteria: 'Demo path is stable and ready to share.',
-      tags: ['Delivery.Launch'],
-    },
-  ],
-  edges: [
-    { id: 'e-vision-architecture', source: 'vision', target: 'architecture' },
-    { id: 'e-research-architecture', source: 'research', target: 'architecture' },
-    { id: 'e-architecture-prototype', source: 'architecture', target: 'prototype' },
-    { id: 'e-ui-workflow', source: 'ui-shell', target: 'workflow' },
-    { id: 'e-deps-availability', source: 'deps', target: 'availability' },
-    { id: 'e-prototype-qa', source: 'prototype', target: 'qa' },
-    { id: 'e-prototype-launch', source: 'prototype', target: 'launch' },
-  ],
-});
-
-const blankSnapshot = (): PlannerSnapshot => ({
-  root: {
-    title: 'New Project',
-    description: '',
-    completionCriteria: '',
-    tags: [],
-  },
-  nodes: [],
-  edges: [],
-});
-
-const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
-const serializeSnapshot = (snapshot: PlannerSnapshot) => JSON.stringify(snapshot);
-const slugify = (value: string) =>
-  value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-
-const normalizeTag = (value: string) =>
-  value
-    .split('.')
-    .map((segment) => segment.trim())
-    .filter(Boolean)
-    .join('.');
-
-const normalizeDateOnly = (value: unknown) =>
-  typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
-
-const formatCreatedAt = (value?: string) => {
-  if (!value) return 'Pending save';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return 'Unknown';
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(parsed);
-};
-
-const getNodeScope = (node: PlannerNodeRecord): ScopeId => node.parentId ?? null;
-
-const isSameScope = (nodes: PlannerNodeRecord[], sourceId: string, targetId: string) => {
-  const source = nodes.find((node) => node.id === sourceId);
-  const target = nodes.find((node) => node.id === targetId);
-  if (!source || !target) {
-    return false;
-  }
-  return getNodeScope(source) === getNodeScope(target);
-};
-
-const sanitizeSnapshot = (snapshot: PlannerSnapshot): PlannerSnapshot => {
-  const rawRoot = snapshot.root as PlannerSnapshot['root'] & {
-    acceptanceCriteria?: string;
-    tags?: unknown;
-  };
-
-  const root = {
-    title: rawRoot?.title ?? 'Main Graph',
-    description: rawRoot?.description ?? '',
-    completionCriteria: rawRoot?.completionCriteria ?? rawRoot?.acceptanceCriteria ?? '',
-    tags: Array.isArray(rawRoot?.tags)
-      ? rawRoot.tags.map((tag) => normalizeTag(String(tag))).filter(Boolean)
-      : [],
-  };
-
-  const nodes = snapshot.nodes.map((node) => {
-    const legacyNode = node as PlannerNodeRecord & {
-      acceptanceCriteria?: string;
-      tags?: unknown;
-      createdAt?: unknown;
-      dueDate?: unknown;
-      doDate?: unknown;
-    };
-
-    return {
-      ...node,
-      description: legacyNode.description ?? '',
-      completionCriteria: legacyNode.completionCriteria ?? legacyNode.acceptanceCriteria ?? '',
-      tags: Array.isArray(legacyNode.tags)
-        ? legacyNode.tags.map((tag) => normalizeTag(String(tag))).filter(Boolean)
-        : [],
-      createdAt: typeof legacyNode.createdAt === 'string' ? legacyNode.createdAt : undefined,
-      dueDate: normalizeDateOnly(legacyNode.dueDate),
-      doDate: normalizeDateOnly(legacyNode.doDate),
-    };
-  });
-
-  const nodeIds = new Set(nodes.map((node) => node.id));
-  const edges = snapshot.edges.filter((edge) => {
-    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
-      return false;
-    }
-    return isSameScope(nodes, edge.source, edge.target);
-  });
-
-  return { root, nodes, edges };
-};
-
-const getStoredSnapshot = (): PlannerSnapshot => {
-  if (typeof window === 'undefined') {
-    return seedSnapshot();
-  }
-
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return seedSnapshot();
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as PlannerSnapshot | ProjectFileV1;
-    if ('project' in parsed && parsed.project) {
-      return sanitizeProjectFile(parsed).project;
-    }
-    return sanitizeSnapshot(parsed as PlannerSnapshot);
-  } catch {
-    return seedSnapshot();
-  }
-};
-
-const getStoredProjectId = (): string => {
-  if (typeof window === 'undefined') {
-    return '';
-  }
-
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return '';
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<ProjectFileV1>;
-    return typeof parsed.projectId === 'string' ? parsed.projectId : '';
-  } catch {
-    return '';
-  }
-};
-
-const getStoredWorkspaceId = (): string => {
-  if (typeof window === 'undefined') return '';
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  if (!raw) return '';
-  try {
-    const parsed = JSON.parse(raw) as Partial<ProjectFileV1>;
-    return typeof parsed.workspaceId === 'string' ? parsed.workspaceId : '';
-  } catch {
-    return '';
-  }
-};
-
-const sanitizeTabs = (tabs: TabDescriptor[] | undefined, nodes: PlannerNodeRecord[]) => {
-  const validGroupIds = new Set(nodes.filter((node) => node.kind === 'group').map((node) => node.id));
-  const normalized = (tabs ?? []).filter((tab) => tab.kind === 'main' || validGroupIds.has(tab.id));
-  const deduped = normalized.filter(
-    (tab, index) => normalized.findIndex((candidate) => candidate.id === tab.id && candidate.kind === tab.kind) === index,
-  );
-  return deduped.some((tab) => tab.kind === 'main') ? deduped : [mainTab, ...deduped];
-};
-
-const sanitizeProjectFile = (raw: ProjectFileV1): ProjectFileV1 => {
-  const project = sanitizeSnapshot(raw.project);
-  const openTabs = sanitizeTabs(raw.ui?.openTabs, project.nodes);
-  const validTabIds = new Set(openTabs.map((tab) => tab.id));
-  const validNodeIds = new Set(project.nodes.map((node) => node.id));
-  const activeTabId = validTabIds.has(raw.ui?.activeTabId) ? raw.ui.activeTabId : 'main';
-  const selectedNodeId =
-    raw.ui?.selectedNodeId && validNodeIds.has(raw.ui.selectedNodeId) ? raw.ui.selectedNodeId : null;
-
-  return {
-    version: 2,
-    projectId: raw.projectId || '',
-    project,
-    ui: {
-      openTabs,
-      activeTabId,
-      selectedNodeId,
-    },
-  };
-};
-
-const isPlannerSnapshot = (value: unknown): value is PlannerSnapshot => {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-
-  const candidate = value as Partial<PlannerSnapshot>;
-  return Boolean(candidate.root && Array.isArray(candidate.nodes) && Array.isArray(candidate.edges));
-};
-
-const normalizeImportedProjectFile = (raw: ImportableProjectFile): ProjectFileV1 => {
-  if (isPlannerSnapshot(raw)) {
-    return sanitizeProjectFile({
-      version: 2,
-      projectId: '',
-      project: raw,
-      ui: {
-        openTabs: [mainTab],
-        activeTabId: 'main',
-        selectedNodeId: null,
-      },
-    });
-  }
-
-  if ('project' in raw && isPlannerSnapshot(raw.project)) {
-    const maybeProjectFile = raw as Partial<ProjectFileV1>;
-    return sanitizeProjectFile({
-      version: maybeProjectFile.version === 1 || maybeProjectFile.version === 2 ? maybeProjectFile.version : 2,
-      projectId: typeof raw.projectId === 'string' ? raw.projectId : '',
-      project: raw.project,
-      ui: {
-        openTabs: maybeProjectFile.ui?.openTabs ?? [mainTab],
-        activeTabId: maybeProjectFile.ui?.activeTabId ?? 'main',
-        selectedNodeId: maybeProjectFile.ui?.selectedNodeId ?? null,
-      },
-    });
-  }
-
-  throw new Error('Invalid project file format.');
-};
-
-const serializeProjectFile = (
-  projectId: string,
-  snapshot: PlannerSnapshot,
-  openTabs: TabDescriptor[],
-  activeTabId: string,
-  selectedNodeId: string | null,
-): ProjectFileV1 => ({
-  version: 2,
-  projectId,
-  project: snapshot,
-  ui: {
-    openTabs,
-    activeTabId,
-    selectedNodeId,
-  },
-});
-
-const serializeStoredState = (
-  workspaceId: string,
-  projectId: string,
-  snapshot: PlannerSnapshot,
-  openTabs: TabDescriptor[],
-  activeTabId: string,
-  selectedNodeId: string | null,
-): ProjectFileV1 => ({
-  ...serializeProjectFile(projectId, snapshot, openTabs, activeTabId, selectedNodeId),
-  version: 3,
-  workspaceId,
-});
-
-const fileNameFromTitle = (title: string) =>
-  `${title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'project-planner'}.json`;
-
+const FLOW_SNAP_GRID: [number, number] = [18, 18];
+const FLOW_PRO_OPTIONS = { hideAttribution: true } as const;
 const formatScopeTitle = (snapshot: PlannerSnapshot, scopeId: string | null | undefined) => {
   if (!scopeId) {
     return snapshot.root.title;
@@ -855,159 +240,6 @@ const mergeSessionJournalEntry = (current: SessionJournalEntry[], nextEntry: Ses
   return merged;
 };
 
-type TagTreeNode = {
-  id: string;
-  label: string;
-  path: string;
-  isTag: boolean;
-  children: TagTreeNode[];
-};
-
-const matchesTagQuery = (tag: string, query: string) => {
-  if (!query) {
-    return true;
-  }
-  return tag === query || tag.startsWith(`${query}.`);
-};
-
-const getAllKnownTags = (snapshot: PlannerSnapshot) =>
-  Array.from(
-    new Set([
-      ...snapshot.root.tags.map(normalizeTag),
-      ...snapshot.nodes.flatMap((node) => node.tags.map(normalizeTag)),
-    ]),
-  )
-    .filter(Boolean)
-    .sort((left, right) => left.localeCompare(right));
-
-const buildTagTree = (tags: string[]): TagTreeNode[] => {
-  const root = new Map<string, TagTreeNode>();
-  const tagSet = new Set(tags);
-
-  for (const tag of tags) {
-    const parts = tag.split('.');
-    let level = root;
-    let currentPath = '';
-
-    for (const part of parts) {
-      currentPath = currentPath ? `${currentPath}.${part}` : part;
-      if (!level.has(part)) {
-        level.set(part, {
-          id: currentPath,
-          label: part,
-          path: currentPath,
-          isTag: tagSet.has(currentPath),
-          children: [],
-        });
-      }
-
-      const node = level.get(part)!;
-      node.isTag = node.isTag || tagSet.has(currentPath);
-      if (!(node as TagTreeNode & { childMap?: Map<string, TagTreeNode> }).childMap) {
-        (node as TagTreeNode & { childMap?: Map<string, TagTreeNode> }).childMap = new Map();
-      }
-      level = (node as TagTreeNode & { childMap: Map<string, TagTreeNode> }).childMap;
-    }
-  }
-
-  const materialize = (map: Map<string, TagTreeNode>): TagTreeNode[] =>
-    Array.from(map.values()).map((node) => {
-      const childMap = (node as TagTreeNode & { childMap?: Map<string, TagTreeNode> }).childMap;
-      return {
-        id: node.id,
-        label: node.label,
-        path: node.path,
-        isTag: node.isTag,
-        children: childMap ? materialize(childMap) : [],
-      };
-    });
-
-  const sortTree = (nodes: TagTreeNode[]): TagTreeNode[] =>
-    nodes
-      .sort((left, right) => left.label.localeCompare(right.label))
-      .map((node) => ({
-        ...node,
-        children: sortTree(node.children),
-      }));
-
-  return sortTree(materialize(root));
-};
-
-const getChildren = (nodes: PlannerNodeRecord[], nodeId: string) => nodes.filter((node) => node.parentId === nodeId);
-
-const getGroupPath = (nodes: PlannerNodeRecord[], groupId: string): PlannerNodeRecord[] => {
-  const node = nodes.find((entry) => entry.id === groupId);
-  if (!node) {
-    return [];
-  }
-
-  const parentPath = node.parentId ? getGroupPath(nodes, node.parentId) : [];
-  return [...parentPath, node];
-};
-
-const getDescendantNodeIds = (nodes: PlannerNodeRecord[], nodeId: string): string[] => {
-  const children = getChildren(nodes, nodeId);
-  return children.flatMap((child) => [child.id, ...getDescendantNodeIds(nodes, child.id)]);
-};
-
-const getDescendantTaskIds = (nodes: PlannerNodeRecord[], nodeId: string): string[] => {
-  const children = getChildren(nodes, nodeId);
-  return children.flatMap((child) => (child.kind === 'task' ? [child.id] : getDescendantTaskIds(nodes, child.id)));
-};
-
-const isNodeComplete = (nodes: PlannerNodeRecord[], nodeId: string): boolean => {
-  const node = nodes.find((entry) => entry.id === nodeId);
-  if (!node) {
-    return false;
-  }
-
-  if (node.kind === 'task') {
-    return node.status === 'done';
-  }
-
-  const descendants = getDescendantTaskIds(nodes, nodeId);
-  return descendants.length > 0 && descendants.every((taskId) => isNodeComplete(nodes, taskId));
-};
-
-const getIncomingEdges = (edges: PlannerEdgeRecord[], nodeId: string) => edges.filter((edge) => edge.target === nodeId);
-
-const getAncestorGroupIds = (nodes: PlannerNodeRecord[], nodeId: string): string[] => {
-  const node = nodes.find((entry) => entry.id === nodeId);
-  if (!node?.parentId) {
-    return [];
-  }
-
-  return [node.parentId, ...getAncestorGroupIds(nodes, node.parentId)];
-};
-
-const isTaskAvailable = (nodes: PlannerNodeRecord[], edges: PlannerEdgeRecord[], node: PlannerNodeRecord) => {
-  if (node.kind !== 'task' || node.status === 'done') {
-    return false;
-  }
-
-  const inheritedBlockers = getAncestorGroupIds(nodes, node.id).flatMap((groupId) => getIncomingEdges(edges, groupId));
-  const blockers = [...getIncomingEdges(edges, node.id), ...inheritedBlockers];
-  return blockers.every((edge) => isNodeComplete(nodes, edge.source));
-};
-
-const isGroupAvailable = (nodes: PlannerNodeRecord[], edges: PlannerEdgeRecord[], node: PlannerNodeRecord) => {
-  if (node.kind !== 'group' || isNodeComplete(nodes, node.id)) {
-    return false;
-  }
-
-  return getIncomingEdges(edges, node.id).every((edge) => isNodeComplete(nodes, edge.source));
-};
-
-const countGroupProgress = (nodes: PlannerNodeRecord[], nodeId: string) => {
-  const descendants = getDescendantTaskIds(nodes, nodeId);
-  const done = descendants.filter((taskId) => isNodeComplete(nodes, taskId)).length;
-  return { done, total: descendants.length };
-};
-
-const countImmediateChildren = (nodes: PlannerNodeRecord[], nodeId: string) => getChildren(nodes, nodeId).length;
-
-const getScopeNodes = (nodes: PlannerNodeRecord[], scopeId: ScopeId) => nodes.filter((node) => getNodeScope(node) === scopeId);
-
 const ensureUniqueNodeId = (nodes: PlannerNodeRecord[], proposedId: string, prefix: string) => {
   if (!nodes.some((node) => node.id === proposedId)) {
     return proposedId;
@@ -1018,296 +250,6 @@ const ensureUniqueNodeId = (nodes: PlannerNodeRecord[], proposedId: string, pref
     nextId = uid(prefix);
   }
   return nextId;
-};
-
-const getScopeEdges = (nodes: PlannerNodeRecord[], edges: PlannerEdgeRecord[], scopeId: ScopeId) => {
-  const scopedNodeIds = new Set(getScopeNodes(nodes, scopeId).map((node) => node.id));
-  return edges.filter((edge) => scopedNodeIds.has(edge.source) && scopedNodeIds.has(edge.target));
-};
-
-const wouldCreateCycle = (edges: PlannerEdgeRecord[], source: string, target: string) => {
-  if (source === target) {
-    return true;
-  }
-
-  const adjacency = new Map<string, string[]>();
-  for (const edge of edges) {
-    const current = adjacency.get(edge.source) ?? [];
-    current.push(edge.target);
-    adjacency.set(edge.source, current);
-  }
-
-  const stack = [target];
-  const visited = new Set<string>();
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    if (current === source) {
-      return true;
-    }
-    if (visited.has(current)) {
-      continue;
-    }
-    visited.add(current);
-    for (const next of adjacency.get(current) ?? []) {
-      stack.push(next);
-    }
-  }
-
-  return false;
-};
-
-const getDefaultNodeSize = (node: PlannerNodeRecord) => (node.kind === 'group' ? groupSize : taskSize);
-
-const getFlowNodeDimensions = (node: PlannerFlowNode) => ({
-  width: Number(node.style?.width ?? node.width ?? (node.type === 'plannerGroup' ? groupSize.width : taskSize.width)),
-  height: Number(node.style?.height ?? node.height ?? (node.type === 'plannerGroup' ? groupSize.height : taskSize.height)),
-});
-
-const getNodeCenter = (node: PlannerFlowNode) => {
-  const { width, height } = getFlowNodeDimensions(node);
-  return {
-    x: node.position.x + width / 2,
-    y: node.position.y + height / 2,
-    width,
-    height,
-  };
-};
-
-const getRectBoundaryPoint = (
-  rect: { x: number; y: number; width: number; height: number },
-  toward: { x: number; y: number },
-) => {
-  const centerX = rect.x + rect.width / 2;
-  const centerY = rect.y + rect.height / 2;
-  const deltaX = toward.x - centerX;
-  const deltaY = toward.y - centerY;
-
-  if (deltaX === 0 && deltaY === 0) {
-    return { x: centerX, y: centerY };
-  }
-
-  const scaleX = deltaX === 0 ? Number.POSITIVE_INFINITY : rect.width / 2 / Math.abs(deltaX);
-  const scaleY = deltaY === 0 ? Number.POSITIVE_INFINITY : rect.height / 2 / Math.abs(deltaY);
-  const scale = Math.min(scaleX, scaleY);
-
-  return {
-    x: centerX + deltaX * scale,
-    y: centerY + deltaY * scale,
-  };
-};
-
-const buildDragPreviewPath = (sourceNode: PlannerFlowNode, targetNode: PlannerFlowNode) => {
-  const source = getNodeCenter(sourceNode);
-  const target = getNodeCenter(targetNode);
-  const sourcePoint = getRectBoundaryPoint(
-    { x: sourceNode.position.x, y: sourceNode.position.y, width: source.width, height: source.height },
-    { x: target.x, y: target.y },
-  );
-  const targetPoint = getRectBoundaryPoint(
-    { x: targetNode.position.x, y: targetNode.position.y, width: target.width, height: target.height },
-    { x: source.x, y: source.y },
-  );
-
-  return `M ${sourcePoint.x} ${sourcePoint.y} L ${targetPoint.x} ${targetPoint.y}`;
-};
-
-const getRelativeChildPosition = (
-  childPosition: { x: number; y: number },
-  parentPosition: { x: number; y: number },
-): { x: number; y: number } => ({
-  x: Math.max(60, childPosition.x - parentPosition.x),
-  y: Math.max(80, childPosition.y - parentPosition.y),
-});
-
-const getEdgeIdFromDomElement = (element: Element | null): string | null => {
-  if (!element) {
-    return null;
-  }
-
-  const edgeElement = element.closest('.react-flow__edge') as HTMLElement | null;
-  if (!edgeElement) {
-    return null;
-  }
-
-  const dataId = edgeElement.getAttribute('data-id');
-  if (dataId) {
-    return dataId;
-  }
-
-  const domId = edgeElement.getAttribute('id');
-  if (domId?.startsWith('reactflow__edge-')) {
-    return domId.slice('reactflow__edge-'.length);
-  }
-
-  return null;
-};
-
-const getNodeElementFromDragEvent = (event: MouseEvent | ReactMouseEvent, nodeId: string): HTMLElement | null => {
-  const target = event.target;
-  if (target instanceof Element) {
-    const closestNode = target.closest('.react-flow__node') as HTMLElement | null;
-    if (closestNode?.getAttribute('data-id') === nodeId) {
-      return closestNode;
-    }
-  }
-
-  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
-    return document.querySelector(`.react-flow__node[data-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null;
-  }
-
-  return document.querySelector(`.react-flow__node[data-id="${nodeId}"]`) as HTMLElement | null;
-};
-
-const getRectSampleAxis = (start: number, end: number, maxStep: number) => {
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-    return [start];
-  }
-
-  const size = end - start;
-  const segmentCount = Math.max(1, Math.ceil(size / maxStep));
-  const points: number[] = [];
-
-  for (let index = 0; index <= segmentCount; index += 1) {
-    points.push(start + (size * index) / segmentCount);
-  }
-
-  return points;
-};
-
-const findEdgeIdIntersectingRect = (rect: DOMRect): string | null => {
-  const viewportWidth = window.innerWidth;
-  const viewportHeight = window.innerHeight;
-  const left = Math.max(0, rect.left);
-  const right = Math.min(viewportWidth, rect.right);
-  const top = Math.max(0, rect.top);
-  const bottom = Math.min(viewportHeight, rect.bottom);
-
-  if (right <= left || bottom <= top) {
-    return null;
-  }
-
-  const sampleXs = getRectSampleAxis(left, right, 18);
-  const sampleYs = getRectSampleAxis(top, bottom, 18);
-
-  for (const clientY of sampleYs) {
-    for (const clientX of sampleXs) {
-      const elements = document.elementsFromPoint(clientX, clientY);
-      for (const element of elements) {
-        if (element.closest('.react-flow__node')) {
-          continue;
-        }
-
-        const edgeId = getEdgeIdFromDomElement(element);
-        if (edgeId) {
-          return edgeId;
-        }
-      }
-    }
-  }
-
-  return null;
-};
-
-const buildFlowNodes = (
-  nodes: PlannerNodeRecord[],
-  scopeNodes: PlannerNodeRecord[],
-  allEdges: PlannerEdgeRecord[],
-  selectedNodeId: string | null,
-  selectedNodeIds: string[],
-  toolbarNodeId: string | null,
-  dropTargetNodeId: string | null,
-  onToggleComplete: (nodeId: string) => void,
-  onSplit: (nodeId: string) => void,
-  onOpen: (nodeId: string) => void,
-  onDelete: (nodeId: string) => void,
-): PlannerFlowNode[] =>
-  scopeNodes.map((node) => {
-    const isComplete = isNodeComplete(nodes, node.id);
-    const isAvailable = node.kind === 'group' ? isGroupAvailable(nodes, allEdges, node) : isTaskAvailable(nodes, allEdges, node);
-    const progress = node.kind === 'group' ? countGroupProgress(nodes, node.id) : null;
-    const childCount = node.kind === 'group' ? countImmediateChildren(nodes, node.id) : null;
-
-    return {
-      id: node.id,
-      position: node.position,
-      draggable: true,
-      selected: selectedNodeIds.includes(node.id) || node.id === selectedNodeId,
-      type: node.kind === 'group' ? 'plannerGroup' : 'plannerTask',
-      data: {
-        title: node.title,
-        kind: node.kind,
-        status: node.kind === 'group' ? (isComplete ? 'done' : 'todo') : node.status,
-        isAvailable,
-        isBlocked: !isAvailable && !isComplete,
-        isDropTarget: node.id === dropTargetNodeId,
-        isEmptyGroup: node.kind === 'group' ? childCount === 0 : undefined,
-        completionLabel:
-          node.kind === 'group'
-            ? progress && progress.total > 0
-              ? `${progress.done}/${progress.total} complete`
-              : 'empty group'
-            : undefined,
-        progressPercent: node.kind === 'group' ? (progress && progress.total > 0 ? (progress.done / progress.total) * 100 : 0) : undefined,
-        childSummary: node.kind === 'group' ? `${childCount} direct items` : undefined,
-        onToggleComplete: () => onToggleComplete(node.id),
-        onSplit: () => onSplit(node.id),
-        onOpen: () => onOpen(node.id),
-        onDelete: () => onDelete(node.id),
-        canToggleComplete: node.kind === 'task',
-        canSplit: node.kind === 'task',
-        canOpen: node.kind === 'group',
-        showActions: node.id === toolbarNodeId,
-      },
-      style: {
-        width: node.kind === 'group' ? groupSize.width : node.size?.width ?? getDefaultNodeSize(node).width,
-        height: node.kind === 'group' ? groupSize.height : node.size?.height ?? getDefaultNodeSize(node).height,
-      },
-    } as PlannerFlowNode;
-  });
-
-const buildFlowEdges = (
-  edges: PlannerEdgeRecord[],
-  selectedEdgeId: string | null,
-  insertionEdgeId: string | null,
-  dragPreviewEdge: DragPreviewEdge | null,
-): Edge[] => {
-  const flowEdges: Edge[] = edges.map((edge): Edge => {
-    const isInsertionTarget = edge.id === insertionEdgeId;
-    const isSelected = edge.id === selectedEdgeId;
-    const isHighlighted = isInsertionTarget || isSelected;
-
-    return {
-      ...edge,
-      animated: isInsertionTarget,
-      selectable: true,
-      selected: isSelected,
-      className: isHighlighted ? 'planner-edge is-insertion-target' : 'planner-edge',
-      style: {
-        strokeWidth: isHighlighted ? 3.5 : 1.75,
-        stroke: isHighlighted ? '#fd6f85' : undefined,
-      },
-    };
-  });
-
-  if (!dragPreviewEdge) {
-    return flowEdges;
-  }
-
-  flowEdges.push({
-    id: '__drag-preview__',
-    source: dragPreviewEdge.source,
-    target: dragPreviewEdge.target,
-    type: 'dragPreview',
-    animated: false,
-    className: 'planner-edge is-drag-preview',
-    data: { path: dragPreviewEdge.path },
-    style: {
-      strokeWidth: 2.5,
-      stroke: '#e1c3ff',
-    },
-  });
-
-  return flowEdges;
 };
 
 const getStoredTheme = (): ThemeMode => {
@@ -1367,214 +309,6 @@ const getStoredTaskScope = (): TaskScopePreference => {
   }
 };
 
-const nextAvailableOffset = (nodes: PlannerNodeRecord[], parentId?: string) => {
-  const siblings = nodes.filter((node) => node.parentId === parentId);
-  return {
-    x: 90 + (siblings.length % 4) * 120,
-    y: 110 + Math.floor(siblings.length / 4) * 120,
-  };
-};
-
-const toolbarIcons = {
-  check: Check,
-  close: X,
-  device_hub: GitFork,
-  open_in_new: ExternalLink,
-  search: Search,
-  warning: TriangleAlert,
-} as const;
-
-type ToolbarIconName = keyof typeof toolbarIcons;
-
-const ToolbarIcon = ({ name }: { name: ToolbarIconName }) => {
-  const Icon: LucideIcon = toolbarIcons[name];
-  return <Icon className="app-icon" aria-hidden="true" />;
-};
-
-const NodeActions = ({ data }: { data: RenderNodeData }) => (
-  <div className="node-actions nodrag nopan">
-    {data.kind === 'task' ? (
-      <>
-        <button
-          type="button"
-          className="node-actions__button is-complete nodrag nopan"
-          onClick={(event) => {
-            event.stopPropagation();
-            data.onToggleComplete();
-          }}
-          disabled={!data.canToggleComplete}
-          aria-label={data.status === 'done' ? 'Mark as incomplete' : 'Mark as complete'}
-          title={data.status === 'done' ? 'Mark as incomplete' : 'Mark as complete'}
-        >
-          <ToolbarIcon name="check" />
-        </button>
-        <button
-          type="button"
-          className="node-actions__button is-split nodrag nopan"
-          onClick={(event) => {
-            event.stopPropagation();
-            data.onSplit();
-          }}
-          disabled={!data.canSplit}
-          aria-label="Split"
-          title="Split"
-        >
-          <ToolbarIcon name="device_hub" />
-        </button>
-      </>
-    ) : (
-      <button
-        type="button"
-        className="node-actions__button is-open nodrag nopan"
-        onClick={(event) => {
-          event.stopPropagation();
-          data.onOpen();
-        }}
-        disabled={!data.canOpen}
-        aria-label="Open"
-        title="Open"
-      >
-        <ToolbarIcon name="open_in_new" />
-      </button>
-    )}
-    <button
-      type="button"
-      className="node-actions__button is-delete nodrag nopan"
-      onClick={(event) => {
-        event.stopPropagation();
-        data.onDelete();
-      }}
-      aria-label="Delete"
-      title="Delete"
-    >
-      <ToolbarIcon name="close" />
-    </button>
-  </div>
-);
-
-const TaskNode = ({ data, selected }: NodeProps<PlannerFlowNode>) => (
-  <div
-    title={data.title}
-    className={[
-      'task-node',
-      data.status === 'done' ? 'is-complete' : '',
-      data.isAvailable ? 'is-available' : '',
-      data.isBlocked ? 'is-blocked' : '',
-      data.isDropTarget ? 'is-drop-target' : '',
-      selected ? 'is-selected' : '',
-    ].join(' ')}
-  >
-    {selected && data.showActions ? <NodeActions data={data} /> : null}
-    <Handle type="target" position={Position.Left} className="handle" />
-    <div className="task-node__header">
-      <div className="task-node__eyebrow">Task</div>
-      <span className="task-node__indicator" aria-hidden="true" />
-    </div>
-    <div className="task-node__title">{data.title}</div>
-    <div className="task-node__footer">
-      <span>{data.status === 'done' ? 'Completed' : data.isBlocked ? 'Blocked' : 'Available now'}</span>
-    </div>
-    <Handle type="source" position={Position.Right} className="handle" />
-  </div>
-);
-
-const GroupNode = ({ data, selected }: NodeProps<PlannerFlowNode>) => (
-  <div
-    title={data.title}
-    className={[
-      'group-entry-node',
-      data.isAvailable ? 'is-available' : '',
-      data.isBlocked ? 'is-blocked' : '',
-      selected ? 'is-selected' : '',
-      data.status === 'done' ? 'is-complete' : '',
-      data.isDropTarget ? 'is-drop-target' : '',
-    ].join(' ')}
-  >
-    {selected && data.showActions ? <NodeActions data={data} /> : null}
-    <Handle type="target" position={Position.Left} className="handle" />
-    <div className="group-entry-node__header">
-      <div className="group-entry-node__eyebrow">
-        <span>Node Group</span>
-        {data.isEmptyGroup ? (
-          <span
-            className="group-entry-node__warning"
-            title="Warning: Node group is empty"
-            aria-label="Warning: Node group is empty"
-          >
-            <ToolbarIcon name="warning" />
-          </span>
-        ) : null}
-      </div>
-      <div className="group-entry-node__status">{data.completionLabel}</div>
-    </div>
-    <div className="group-entry-node__title">{data.title}</div>
-    <div className="group-entry-node__progress-row">
-      <div className="group-entry-node__progress-bar" aria-hidden="true">
-        <div
-          className="group-entry-node__progress-fill"
-          style={{ width: `${Math.max(0, Math.min(100, data.progressPercent ?? 0))}%` }}
-        />
-      </div>
-      <div className="group-entry-node__metric">{Math.round(data.progressPercent ?? 0)}%</div>
-    </div>
-    <div className="group-entry-node__hint">{data.childSummary} · Double-click to open</div>
-    <Handle type="source" position={Position.Right} className="handle" />
-  </div>
-);
-
-const DragPreviewFlowEdge = ({ id, markerEnd, data }: EdgeProps<Edge<{ path?: string }>>) => {
-  if (!data?.path) {
-    return null;
-  }
-
-  return <BaseEdge id={id} path={data.path} markerEnd={markerEnd} interactionWidth={0} />;
-};
-
-const nodeTypes = {
-  plannerTask: TaskNode,
-  plannerGroup: GroupNode,
-};
-
-const edgeTypes = {
-  dragPreview: DragPreviewFlowEdge,
-};
-
-const TagTree = ({
-  nodes,
-  selectedTags,
-  onToggle,
-}: {
-  nodes: TagTreeNode[];
-  selectedTags: string[];
-  onToggle: (tag: string) => void;
-}) => (
-  <div className="tag-tree">
-    {nodes.map((node) => (
-      <div key={node.path} className="tag-tree__branch">
-        <button
-          type="button"
-          className={[
-            'tag-tree__item',
-            selectedTags.includes(node.path) ? 'is-selected' : '',
-            node.isTag ? '' : 'is-branch',
-          ].join(' ')}
-          onClick={() => (node.isTag ? onToggle(node.path) : undefined)}
-        >
-          <span className="tag-tree__caret" aria-hidden="true">
-            {node.children.length > 0 ? <ChevronDown /> : null}
-          </span>
-          <span>{node.label}</span>
-        </button>
-        {node.children.length > 0 ? (
-          <div className="tag-tree__children">
-            <TagTree nodes={node.children} selectedTags={selectedTags} onToggle={onToggle} />
-          </div>
-        ) : null}
-      </div>
-    ))}
-  </div>
-);
-
 function PlannerApp() {
   const { screenToFlowPosition, setCenter, getZoom, getViewport } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1582,8 +316,8 @@ function PlannerApp() {
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string>(() => getStoredWorkspaceId());
   const [projectId, setProjectId] = useState<string>(() => getStoredProjectId());
-  const [snapshot, setSnapshot] = useState<PlannerSnapshot>(() => getStoredSnapshot());
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredTheme());
+  const [snapshot, setSnapshot] = usePlannerSnapshot(getStoredSnapshot);
+  const [themeMode] = useState<ThemeMode>(() => getStoredTheme());
   const [openTabs, setOpenTabs] = useState<TabDescriptor[]>([mainTab]);
   const [activeTabId, setActiveTabId] = useState<string>('main');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -1606,7 +340,7 @@ function PlannerApp() {
   const [workspaceTreeError, setWorkspaceTreeError] = useState<string | null>(null);
   const [loadingStoredProjectId, setLoadingStoredProjectId] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking');
-  const [sessionJournal, setSessionJournal] = useState<SessionJournalEntry[]>([]);
+  const [, setSessionJournal] = useState<SessionJournalEntry[]>([]);
   const [panelPreferences, setPanelPreferences] = useState(() => getStoredPanelPreferences());
   const [taskScope, setTaskScope] = useState<TaskScopePreference>(() => getStoredTaskScope());
   const [availableTasks, setAvailableTasks] = useState<AvailableTaskItem[]>([]);
@@ -1616,7 +350,6 @@ function PlannerApp() {
   const [completingTaskKey, setCompletingTaskKey] = useState<string | null>(null);
   const [dragDropTarget, setDragDropTarget] = useState<NodeDropTarget>(null);
   const [dragPreviewNodeId, setDragPreviewNodeId] = useState<string | null>(null);
-  const [flowViewport, setFlowViewport] = useState({ x: 0, y: 0, zoom: 1 });
   const [isCanvasPointerDown, setIsCanvasPointerDown] = useState(false);
   const [isProjectGraphLoading, setIsProjectGraphLoading] = useState(true);
   const [graphSyncError, setGraphSyncError] = useState<string | null>(null);
@@ -1624,6 +357,8 @@ function PlannerApp() {
   const notificationIdRef = useRef(0);
   const availableTasksRequestRef = useRef(0);
   const canvasNodesRef = useRef<PlannerFlowNode[]>([]);
+  const multiSelectionActionsRef = useRef<HTMLDivElement | null>(null);
+  const flowViewportRef = useRef({ x: 0, y: 0, zoom: 1 });
   const snapshotRef = useRef(snapshot);
   const workspaceIdRef = useRef(workspaceId);
   const projectIdRef = useRef(projectId);
@@ -1646,11 +381,12 @@ function PlannerApp() {
     setSessionJournal((current) => nextEntries.reduce(mergeSessionJournalEntry, current));
   }, []);
 
-  const scopeNodes = useMemo(() => getScopeNodes(snapshot.nodes, activeScopeId), [snapshot.nodes, activeScopeId]);
-  const scopeEdges = useMemo(
-    () => getScopeEdges(snapshot.nodes, snapshot.edges, activeScopeId),
-    [snapshot.nodes, snapshot.edges, activeScopeId],
+  const plannerGraph = useMemo(
+    () => createPlannerGraphIndex(snapshot.nodes, snapshot.edges),
+    [snapshot.nodes, snapshot.edges],
   );
+  const scopeNodes = useMemo(() => [...plannerGraph.getScopeNodes(activeScopeId)], [plannerGraph, activeScopeId]);
+  const scopeEdges = useMemo(() => [...plannerGraph.getScopeEdges(activeScopeId)], [plannerGraph, activeScopeId]);
   const [canvasNodes, setCanvasNodes] = useState<PlannerFlowNode[]>([]);
 
   const fitCurrentGraph = useCallback((duration = 300) => {
@@ -1672,12 +408,11 @@ function PlannerApp() {
     void setCenter(minX + graphWidth / 2, minY + graphHeight / 2, { zoom, duration });
   }, [setCenter]);
 
-  useEffect(() => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify(serializeStoredState(workspaceId, projectId, snapshot, openTabs, activeTabId, selectedNodeId)),
-    );
-  }, [workspaceId, projectId, snapshot, openTabs, activeTabId, selectedNodeId]);
+  const storedProjectState = useMemo(
+    () => serializeStoredState(workspaceId, projectId, snapshot, openTabs, activeTabId, selectedNodeId),
+    [workspaceId, projectId, snapshot, openTabs, activeTabId, selectedNodeId],
+  );
+  useDebouncedLocalStorage(STORAGE_KEY, storedProjectState);
 
   useEffect(() => {
     window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
@@ -1840,11 +575,6 @@ function PlannerApp() {
       return;
     }
 
-    const nextSerialized = serializeSnapshot(snapshot);
-    if (nextSerialized === lastSyncedSnapshotRef.current) {
-      return;
-    }
-
     if (isInspectorEditingRef.current) {
       return;
     }
@@ -1859,6 +589,12 @@ function PlannerApp() {
 
     syncTimerRef.current = window.setTimeout(() => {
       syncTimerRef.current = null;
+      if (serializeSnapshot(snapshot) === lastSyncedSnapshotRef.current) {
+        syncPromiseRef.current = null;
+        syncResolveRef.current?.();
+        syncResolveRef.current = null;
+        return;
+      }
       void persistSnapshotToServer(snapshot)
         .catch((error) => {
           setGraphSyncError(error instanceof Error ? error.message : 'Could not persist the workflow.');
@@ -1985,7 +721,6 @@ function PlannerApp() {
   );
 
   const selectedNode = snapshot.nodes.find((node) => node.id === selectedNodeId) ?? null;
-  const selectedCanvasNode = canvasNodes.find((node) => node.id === selectedNodeId) ?? null;
   const selectedCanvasNodes = useMemo(() => canvasNodes.filter((node) => node.selected), [canvasNodes]);
   const multiSelectedCanvasNodes = useMemo(() => selectedCanvasNodes.filter((node) => scopeNodes.some((scopeNode) => scopeNode.id === node.id)), [selectedCanvasNodes, scopeNodes]);
   const multiSelectedNodeIds = useMemo(() => multiSelectedCanvasNodes.map((node) => node.id), [multiSelectedCanvasNodes]);
@@ -2017,12 +752,23 @@ function PlannerApp() {
       return null;
     }
 
+    const viewport = flowViewportRef.current;
     return {
-      left: flowViewport.x + (multiSelectionBounds.left + multiSelectionBounds.width / 2) * flowViewport.zoom,
-      top: flowViewport.y + multiSelectionBounds.top * flowViewport.zoom,
+      left: viewport.x + (multiSelectionBounds.left + multiSelectionBounds.width / 2) * viewport.zoom,
+      top: viewport.y + multiSelectionBounds.top * viewport.zoom,
       transform: 'translate(-50%, calc(-100% - 0.75rem))',
     };
-  }, [multiSelectionBounds, flowViewport]);
+  }, [multiSelectionBounds]);
+  const positionMultiSelectionActions = useCallback(
+    (viewport: { x: number; y: number; zoom: number }) => {
+      flowViewportRef.current = viewport;
+      const element = multiSelectionActionsRef.current;
+      if (!element || !multiSelectionBounds) return;
+      element.style.left = `${viewport.x + (multiSelectionBounds.left + multiSelectionBounds.width / 2) * viewport.zoom}px`;
+      element.style.top = `${viewport.y + multiSelectionBounds.top * viewport.zoom}px`;
+    },
+    [multiSelectionBounds],
+  );
   const activeScopeNode = activeScopeId ? snapshot.nodes.find((node) => node.id === activeScopeId) ?? null : null;
   const panelItem = selectedNode ?? activeScopeNode ?? null;
   const panelMode: 'selected' | 'scope-group' | 'root' =
@@ -2063,8 +809,8 @@ function PlannerApp() {
   }, [pendingCenteredNodeId, canvasNodes, setCenter, getZoom]);
 
   useEffect(() => {
-    setFlowViewport(getViewport());
-  }, [getViewport, canvasNodes.length, activeTabId]);
+    positionMultiSelectionActions(getViewport());
+  }, [getViewport, canvasNodes.length, activeTabId, positionMultiSelectionActions]);
 
   const resolvedTaskScope = useMemo(() => {
     if (taskScope.mode === 'all') {
@@ -2254,14 +1000,6 @@ function PlannerApp() {
     },
     [snapshot.nodes, openGroupTab],
   );
-
-  const closeGroupTab = useCallback((groupId: string) => {
-    setOpenTabs((current) => current.filter((tab) => tab.id !== groupId));
-    setActiveTabId((current) => (current === groupId ? 'main' : current));
-    setSelectedNodeId((current) => (current === groupId ? null : current));
-    setSelectedNodeIds((current) => current.filter((nodeId) => nodeId !== groupId));
-    setToolbarNodeId((current) => (current === groupId ? null : current));
-  }, []);
 
   const findEdgeIdAtPoint = useCallback((clientX: number, clientY: number) => {
     const elements = document.elementsFromPoint(clientX, clientY);
@@ -2525,7 +1263,7 @@ function PlannerApp() {
       const newNodeId = uid('task');
       let newNodeTitle = '';
       setSnapshot((current) => {
-        const scopedNodes = getScopeNodes(current.nodes, activeScopeId);
+        const scopedNodes = current.nodes.filter((node) => getNodeScope(node) === activeScopeId);
         const nextIndex = scopedNodes.length;
         const newNode: PlannerNodeRecord = {
           id: newNodeId,
@@ -3032,6 +1770,10 @@ function PlannerApp() {
     },
     [deleteItems],
   );
+  const flowToggleTaskStatus = useStableCallback(toggleTaskStatus);
+  const flowSplitTask = useStableCallback(splitTask);
+  const flowOpenNodeGroup = useStableCallback(openNodeGroup);
+  const flowDeleteItem = useStableCallback(deleteItem);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -3054,21 +1796,27 @@ function PlannerApp() {
 
   useEffect(() => {
     const nextCanvasNodes = buildFlowNodes(
-      snapshot.nodes,
+      plannerGraph,
       scopeNodes,
-      snapshot.edges,
       selectedNodeId,
       selectedNodeIds,
       toolbarNodeId,
       dragDropTarget?.nodeId ?? null,
-      toggleTaskStatus,
-      splitTask,
-      openNodeGroup,
-      deleteItem,
+      flowToggleTaskStatus,
+      flowSplitTask,
+      flowOpenNodeGroup,
+      flowDeleteItem,
+      canvasNodesRef.current,
     );
+    if (
+      nextCanvasNodes.length === canvasNodesRef.current.length &&
+      nextCanvasNodes.every((node, index) => node === canvasNodesRef.current[index])
+    ) {
+      return;
+    }
     canvasNodesRef.current = nextCanvasNodes;
     setCanvasNodes(nextCanvasNodes);
-  }, [snapshot.nodes, scopeNodes, snapshot.edges, selectedNodeId, selectedNodeIds, toolbarNodeId, dragDropTarget, toggleTaskStatus, splitTask, openNodeGroup, deleteItem]);
+  }, [plannerGraph, scopeNodes, selectedNodeId, selectedNodeIds, toolbarNodeId, dragDropTarget, flowToggleTaskStatus, flowSplitTask, flowOpenNodeGroup, flowDeleteItem]);
 
   const insertNodeIntoEdge = useCallback((edgeId: string, nodeId: string) => {
     const edge = snapshot.edges.find((entry) => entry.id === edgeId);
@@ -3120,7 +1868,6 @@ function PlannerApp() {
     setInsertionEdgeId(null);
   }, [appendSessionJournal, snapshot]);
 
-  const panelGroupProgress = panelItem?.kind === 'group' ? countGroupProgress(snapshot.nodes, panelItem.id) : null;
   const panelTags = panelMode === 'root' ? snapshot.root.tags : panelItem?.tags ?? [];
   const normalizedTagQuery = normalizeTag(tagQuery);
   const knownTags = useMemo(() => getAllKnownTags(snapshot), [snapshot]);
@@ -3176,6 +1923,8 @@ function PlannerApp() {
     anchor.click();
     URL.revokeObjectURL(url);
   }, [projectId, snapshot, openTabs, activeTabId, selectedNodeId]);
+
+  const importProject = useCallback(() => fileInputRef.current?.click(), []);
 
   const applyLoadedProject = useCallback(
     async (projectFile: ProjectFileV1) => {
@@ -3294,137 +2043,29 @@ function PlannerApp() {
             </button>
           </div>
 
-          <div className="sidebar-section workspace-switcher">
-            <span className="sidebar-section__label">Workspace</span>
-            <button
-              type="button"
-              className="workspace-switcher__trigger"
-              onClick={() => {
-                setIsWorkspaceMenuOpen((current) => !current);
-                setIsProjectMenuOpen(false);
-              }}
-              aria-haspopup="menu"
-              aria-expanded={isWorkspaceMenuOpen}
-            >
-              <span>{activeWorkspace?.name ?? 'Select workspace'}</span>
-              <ChevronDown aria-hidden="true" />
-            </button>
-            {isWorkspaceMenuOpen ? (
-              <div className="sidebar-menu workspace-menu" role="menu" aria-label="Workspaces">
-                <div className="sidebar-menu__scroll">
-                  {workspaces.map((workspace) => (
-                    <button
-                      key={workspace.workspaceId}
-                      type="button"
-                      className={workspace.workspaceId === workspaceId ? 'is-active' : ''}
-                      onClick={() => void selectWorkspace(workspace.workspaceId)}
-                      role="menuitem"
-                    >
-                      <span>{workspace.name}</span>
-                      <small>{workspace.projectCount}</small>
-                    </button>
-                  ))}
-                </div>
-                <div className="sidebar-menu__actions">
-                  <button type="button" onClick={() => void createNewWorkspace()} role="menuitem">
-                    <Plus aria-hidden="true" /> Create workspace
-                  </button>
-                  {activeWorkspace ? (
-                    <>
-                      <button type="button" onClick={() => void renameWorkspace(activeWorkspace)} role="menuitem">
-                        <Pencil aria-hidden="true" /> Rename
-                      </button>
-                      <button type="button" className="is-danger" onClick={() => void removeWorkspace(activeWorkspace)} role="menuitem">
-                        <Trash2 aria-hidden="true" /> Delete
-                      </button>
-                    </>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-            {workspaceTreeError ? <p className="sidebar-status is-error">{workspaceTreeError}</p> : null}
-            {isWorkspaceTreeLoading && workspaces.length === 0 ? <p className="sidebar-status">Loading workspaces...</p> : null}
-          </div>
-
-          <div className="sidebar-section projects-section">
-            <div className="sidebar-section__header">
-              <span className="sidebar-section__label">Projects</span>
-              <div className="sidebar-section__actions">
-                <button
-                  type="button"
-                  onClick={() => void createNewProject()}
-                  disabled={!workspaceId || isProjectGraphLoading}
-                  aria-label="Create project"
-                  title="Create project"
-                >
-                  <Plus aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsProjectMenuOpen((current) => !current);
-                    setIsWorkspaceMenuOpen(false);
-                  }}
-                  aria-label="Project file actions"
-                  title="Project file actions"
-                  aria-haspopup="menu"
-                  aria-expanded={isProjectMenuOpen}
-                >
-                  <MoreHorizontal aria-hidden="true" />
-                </button>
-              </div>
-            </div>
-            {isProjectMenuOpen ? (
-              <div className="sidebar-menu project-actions-menu" role="menu" aria-label="Project file actions">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsProjectMenuOpen(false);
-                    fileInputRef.current?.click();
-                  }}
-                  disabled={!workspaceId}
-                  role="menuitem"
-                >
-                  <Upload aria-hidden="true" /> Import project
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsProjectMenuOpen(false);
-                    saveProject();
-                  }}
-                  disabled={!projectId}
-                  role="menuitem"
-                >
-                  <Download aria-hidden="true" /> Export project
-                </button>
-              </div>
-            ) : null}
-            <div className="projects-list" aria-label="Projects">
-              {activeWorkspace?.projects.map((project) => (
-                <div key={project.projectId} className={['project-row', project.projectId === projectId ? 'is-active' : ''].join(' ')}>
-                  <button
-                    type="button"
-                    className="project-row__label"
-                    onClick={() => void openStoredProject(activeWorkspace.workspaceId, project.projectId)}
-                    disabled={loadingStoredProjectId !== null}
-                    aria-current={project.projectId === projectId ? 'page' : undefined}
-                  >
-                    <span>{loadingStoredProjectId === project.projectId ? 'Loading...' : project.title || 'Untitled Project'}</span>
-                  </button>
-                  <div className="project-row__actions">
-                    <button type="button" onClick={() => void renameStoredProject(activeWorkspace.workspaceId, project.projectId, project.title)} aria-label={`Rename ${project.title}`} title="Rename project">
-                      <Pencil aria-hidden="true" />
-                    </button>
-                    <button type="button" onClick={() => void removeStoredProject(activeWorkspace.workspaceId, project.projectId, project.title)} aria-label={`Delete ${project.title}`} title="Delete project">
-                      <Trash2 aria-hidden="true" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-              {activeWorkspace && activeWorkspace.projects.length === 0 ? <p className="sidebar-empty">No projects yet</p> : null}
-            </div>
-          </div>
+          <WorkspaceProjectNavigation
+            workspaces={workspaces}
+            workspaceId={workspaceId}
+            projectId={projectId}
+            isWorkspaceMenuOpen={isWorkspaceMenuOpen}
+            setIsWorkspaceMenuOpen={setIsWorkspaceMenuOpen}
+            isProjectMenuOpen={isProjectMenuOpen}
+            setIsProjectMenuOpen={setIsProjectMenuOpen}
+            isWorkspaceTreeLoading={isWorkspaceTreeLoading}
+            workspaceTreeError={workspaceTreeError}
+            loadingStoredProjectId={loadingStoredProjectId}
+            isProjectGraphLoading={isProjectGraphLoading}
+            onSelectWorkspace={selectWorkspace}
+            onCreateWorkspace={createNewWorkspace}
+            onRenameWorkspace={renameWorkspace}
+            onRemoveWorkspace={removeWorkspace}
+            onOpenProject={openStoredProject}
+            onCreateProject={createNewProject}
+            onRenameProject={renameStoredProject}
+            onRemoveProject={removeStoredProject}
+            onImportProject={importProject}
+            onExportProject={saveProject}
+          />
 
           <div className="topbar__search-stack sidebar-search">
             <label className="topbar__search" aria-label="Search nodes">
@@ -3661,7 +2302,7 @@ function PlannerApp() {
                 <ParticleGridBackground />
                 <div className="canvas-shell__overlay">
                   {multiSelectionButtonStyle && !isCanvasPointerDown ? (
-                    <div className="multi-selection-actions" style={multiSelectionButtonStyle}>
+                    <div ref={multiSelectionActionsRef} className="multi-selection-actions" style={multiSelectionButtonStyle}>
                       <button
                         type="button"
                         className="multi-selection-actions__button nodrag nopan"
@@ -3718,11 +2359,11 @@ function PlannerApp() {
                 <ReactFlow
                   nodes={canvasNodes}
                   edges={flowEdges}
-                  nodeTypes={nodeTypes}
-                  edgeTypes={edgeTypes}
+                  nodeTypes={flowNodeTypes}
+                  edgeTypes={flowEdgeTypes}
                   fitView
                   snapToGrid
-                  snapGrid={[18, 18]}
+                  snapGrid={FLOW_SNAP_GRID}
                   panOnScroll
                   panOnScrollMode={PanOnScrollMode.Free}
                   panOnDrag={[1, 2]}
@@ -3800,7 +2441,7 @@ function PlannerApp() {
                     setDragDropTarget(null);
                     setDragPreviewNodeId(null);
                   }}
-                  onMove={(_, viewport) => setFlowViewport(viewport)}
+                  onMove={(_, viewport) => positionMultiSelectionActions(viewport)}
                   onPaneClick={() => {
                     setSelectedNodeId(null);
                     setSelectedNodeIds([]);
@@ -3809,7 +2450,7 @@ function PlannerApp() {
                     setDragDropTarget(null);
                     setDragPreviewNodeId(null);
                   }}
-                  proOptions={{ hideAttribution: true }}
+                  proOptions={FLOW_PRO_OPTIONS}
                 >
                 </ReactFlow>
               </main>
