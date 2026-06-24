@@ -49,6 +49,31 @@ services:
       retries: 20
       start_period: 5s
     restart: unless-stopped
+  postgres-test:
+    image: postgres:17-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: projectplanner_test
+      POSTGRES_USER: projectplanner
+      POSTGRES_PASSWORD: projectplanner
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U projectplanner -d projectplanner_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+  workflow-service-test:
+    build:
+      context: ./workflow_service
+      dockerfile: Dockerfile
+    profiles: ["test"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://projectplanner:projectplanner@postgres-test:5432/projectplanner_test
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && pytest"]
 
 volumes:
   postgres-data:

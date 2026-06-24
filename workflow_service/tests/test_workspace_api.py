@@ -29,6 +29,15 @@ def create_workspace(client: TestClient, name: str = "Engineering") -> dict:
     return response.json()
 
 
+def test_listing_empty_database_recreates_default(client: TestClient):
+    listed = client.get("/api/workspaces")
+
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+    assert listed.json()[0]["name"] == "Default Workspace"
+    assert listed.json()[0]["projects"] == []
+
+
 def create_project(client: TestClient, workspace_id: str, title: str = "Launch") -> dict:
     response = client.post(f"/api/workspaces/{workspace_id}/projects", json={"title": title})
     assert response.status_code == 201
@@ -266,3 +275,38 @@ def test_node_metadata_dates_tags_and_created_at_are_persisted(client: TestClien
         json={"operations": [{"type": "replace_graph", "project": graph}]},
     )
     assert invalid.status_code == 422
+
+
+def test_workspace_tags_are_global_and_collected_from_project_nodes(client: TestClient):
+    workspace = create_workspace(client)
+    project = create_project(client, workspace["workspaceId"], "Tagged Project")
+
+    replace_graph(
+        client,
+        workspace["workspaceId"],
+        project["projectId"],
+        {
+            "root": {"title": "Tagged Project", "description": "", "completionCriteria": "", "tags": [" Legacy.Root.Tag "]},
+            "nodes": [
+                {
+                    "id": "task-1",
+                    "kind": "task",
+                    "title": "Tag me",
+                    "status": "todo",
+                    "position": {"x": 0, "y": 0},
+                    "tags": ["Delivery.Release.QA", "Delivery.Release.QA", " Research.Users "],
+                }
+            ],
+            "edges": [],
+        },
+    )
+
+    workspace_response = client.get(f"/api/workspaces/{workspace['workspaceId']}")
+    assert workspace_response.status_code == 200
+    assert workspace_response.json()["tags"] == ["Delivery.Release.QA", "Legacy.Root.Tag", "Research.Users"]
+
+    graph_response = client.get(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/graph"
+    )
+    assert graph_response.status_code == 200
+    assert graph_response.json()["project"]["root"]["tags"] == []

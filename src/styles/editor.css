@@ -33,7 +33,7 @@ body {
   height: 100dvh;
   grid-column: 1;
   grid-row: 1;
-  grid-template-rows: auto auto minmax(0, auto) auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   gap: 12px;
   overflow: hidden;
   padding: 12px;
@@ -315,14 +315,16 @@ body {
 }
 
 .available-task-list {
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .available-task-row {
   display: grid;
   min-height: 34px;
-  grid-template-columns: minmax(0, 1fr) 24px 8px;
+  grid-template-columns: minmax(0, 1fr) 24px;
   align-items: center;
   gap: 5px;
   margin-bottom: 4px;
@@ -368,13 +370,6 @@ body {
 .available-task-row__check svg {
   width: 10px;
   height: 10px;
-}
-
-.available-task-row__status {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #8bd6b4;
 }
 
 .sidebar-empty {
@@ -761,4 +756,3 @@ body {
     display: none;
   }
 }
-

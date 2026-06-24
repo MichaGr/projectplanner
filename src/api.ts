@@ -19,6 +19,7 @@ export type WorkspaceSummary = {
   workspaceId: string;
   name: string;
   description: string;
+  tags: string[];
   projectCount: number;
   createdAt: string;
   updatedAt: string;
@@ -131,7 +132,7 @@ export const createWorkspace = async (payload: { name: string; description?: str
 
 export const updateWorkspace = async (
   workspaceId: string,
-  payload: { name?: string; description?: string },
+  payload: { name?: string; description?: string; tags?: string[] },
 ): Promise<WorkspaceSummary> => {
   const response = await fetch(workspaceUrl(workspaceId), {
     method: 'PATCH',

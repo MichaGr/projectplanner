@@ -72,7 +72,7 @@ import { useStableCallback } from './hooks/useStableCallback';
 import { usePlannerSnapshot } from './features/planner/state/usePlannerSnapshot';
 import { ToolbarIcon } from './components/ToolbarIcon';
 import { TagTree } from './features/planner/components/TagTree';
-import { buildTagTree, getAllKnownTags, matchesTagQuery } from './features/planner/model/tags';
+import { buildTagTree, matchesTagQuery } from './features/planner/model/tags';
 import { WorkspaceProjectNavigation } from './features/navigation/WorkspaceProjectNavigation';
 import {
   buildDragPreviewPath,
@@ -258,6 +258,8 @@ const getStoredTheme = (): ThemeMode => {
 
 const clampLeftPanelWidth = (value: number) => Math.min(420, Math.max(220, value));
 const clampRightPanelWidth = (value: number) => Math.min(480, Math.max(260, value));
+const normalizeTagList = (tags: string[]) =>
+  Array.from(new Set(tags.map(normalizeTag).filter(Boolean))).sort((left, right) => left.localeCompare(right));
 
 const getStoredPanelPreferences = () => {
   if (typeof window === 'undefined') {
@@ -326,7 +328,6 @@ function PlannerApp() {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [notification, setNotification] = useState<TransientNotification | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [tagQuery, setTagQuery] = useState('');
   const [shouldFocusSelectedTitle, setShouldFocusSelectedTitle] = useState(false);
   const [insertionEdgeId, setInsertionEdgeId] = useState<string | null>(null);
   const [pendingCenteredNodeId, setPendingCenteredNodeId] = useState<string | null>(null);
@@ -348,6 +349,9 @@ function PlannerApp() {
   const [availableTasksError, setAvailableTasksError] = useState<string | null>(null);
   const [availableTasksRefreshKey, setAvailableTasksRefreshKey] = useState(0);
   const [completingTaskKey, setCompletingTaskKey] = useState<string | null>(null);
+  const [workspaceTags, setWorkspaceTags] = useState<string[]>([]);
+  const [isNodeTagModalOpen, setIsNodeTagModalOpen] = useState(false);
+  const [nodeTagModalQuery, setNodeTagModalQuery] = useState('');
   const [dragDropTarget, setDragDropTarget] = useState<NodeDropTarget>(null);
   const [dragPreviewNodeId, setDragPreviewNodeId] = useState<string | null>(null);
   const [isCanvasPointerDown, setIsCanvasPointerDown] = useState(false);
@@ -445,6 +449,11 @@ function PlannerApp() {
   }, [workspaceId]);
 
   useEffect(() => {
+    const activeWorkspace = workspaces.find((workspace) => workspace.workspaceId === workspaceId) ?? null;
+    setWorkspaceTags(activeWorkspace?.tags ?? []);
+  }, [workspaceId, workspaces]);
+
+  useEffect(() => {
     projectIdRef.current = projectId;
   }, [projectId]);
 
@@ -472,6 +481,20 @@ function PlannerApp() {
     } finally {
       setIsWorkspaceTreeLoading(false);
     }
+  }, []);
+
+  const mergeWorkspaceSummary = useCallback((summary: WorkspaceSummary) => {
+    setWorkspaces((current) => {
+      let found = false;
+      const next = current.map((workspace) => {
+        if (workspace.workspaceId !== summary.workspaceId) {
+          return workspace;
+        }
+        found = true;
+        return summary;
+      });
+      return found ? next : [summary, ...next];
+    });
   }, []);
 
   const persistSnapshotToServer = useCallback(
@@ -650,12 +673,9 @@ function PlannerApp() {
   }, [scopeEdges, selectedEdgeId]);
 
   useEffect(() => {
-    setTagQuery('');
-  }, [activeTabId, selectedNodeId]);
-
-  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      setIsNodeTagModalOpen(false);
       setIsWorkspaceMenuOpen(false);
       setIsProjectMenuOpen(false);
       setIsLeftDrawerOpen(false);
@@ -724,6 +744,7 @@ function PlannerApp() {
   const selectedCanvasNodes = useMemo(() => canvasNodes.filter((node) => node.selected), [canvasNodes]);
   const multiSelectedCanvasNodes = useMemo(() => selectedCanvasNodes.filter((node) => scopeNodes.some((scopeNode) => scopeNode.id === node.id)), [selectedCanvasNodes, scopeNodes]);
   const multiSelectedNodeIds = useMemo(() => multiSelectedCanvasNodes.map((node) => node.id), [multiSelectedCanvasNodes]);
+
   const multiSelectionBounds = useMemo(() => {
     if (multiSelectedCanvasNodes.length < 2) {
       return null;
@@ -773,6 +794,14 @@ function PlannerApp() {
   const panelItem = selectedNode ?? activeScopeNode ?? null;
   const panelMode: 'selected' | 'scope-group' | 'root' =
     selectedNode ? 'selected' : activeScopeNode ? 'scope-group' : 'root';
+  const tagTargetNode = panelMode === 'root' ? null : panelItem;
+
+  useEffect(() => {
+    setNodeTagModalQuery('');
+    if (!tagTargetNode) {
+      setIsNodeTagModalOpen(false);
+    }
+  }, [tagTargetNode]);
 
   useEffect(() => {
     if (!shouldFocusSelectedTitle || panelMode !== 'selected' || !selectedNode) {
@@ -816,11 +845,15 @@ function PlannerApp() {
     if (taskScope.mode === 'all') {
       return { mode: 'all' as const };
     }
+    const activeWorkspace = workspaces.find((workspace) => workspace.workspaceId === workspaceId);
     if (taskScope.mode === 'workspace') {
-      return workspaceId ? { mode: 'workspace' as const, workspaceId } : null;
+      return activeWorkspace ? { mode: 'workspace' as const, workspaceId: activeWorkspace.workspaceId } : null;
     }
-    return workspaceId && projectId ? { mode: 'project' as const, workspaceId, projectId } : null;
-  }, [projectId, taskScope.mode, workspaceId]);
+    const activeProject = activeWorkspace?.projects.find((project) => project.projectId === projectId);
+    return activeWorkspace && activeProject
+      ? { mode: 'project' as const, workspaceId: activeWorkspace.workspaceId, projectId: activeProject.projectId }
+      : null;
+  }, [projectId, taskScope.mode, workspaceId, workspaces]);
 
   useEffect(() => {
     const requestId = availableTasksRequestRef.current + 1;
@@ -1205,16 +1238,6 @@ function PlannerApp() {
     [appendSessionJournal, snapshot.root],
   );
 
-  const setRootTags = useCallback((updater: (currentTags: string[]) => string[]) => {
-    setSnapshot((current) => ({
-      ...current,
-      root: {
-        ...current.root,
-        tags: updater(current.root.tags).map(normalizeTag).filter(Boolean),
-      },
-    }));
-  }, []);
-
   const setNodeTags = useCallback((nodeId: string, updater: (currentTags: string[]) => string[]) => {
     setSnapshot((current) => ({
       ...current,
@@ -1223,6 +1246,27 @@ function PlannerApp() {
       ),
     }));
   }, []);
+
+  const persistWorkspaceTags = useCallback(
+    async (nextTags: string[]) => {
+      if (!workspaceIdRef.current) {
+        return;
+      }
+      const normalizedTags = normalizeTagList(nextTags);
+      setWorkspaceTags(normalizedTags);
+      setWorkspaces((current) =>
+        current.map((workspace) =>
+          workspace.workspaceId === workspaceIdRef.current ? { ...workspace, tags: normalizedTags } : workspace,
+        ),
+      );
+      const updatedWorkspace = await updateWorkspace(workspaceIdRef.current, { tags: normalizedTags });
+      mergeWorkspaceSummary(updatedWorkspace);
+      if (workspaceIdRef.current === updatedWorkspace.workspaceId) {
+        setWorkspaceTags(updatedWorkspace.tags);
+      }
+    },
+    [mergeWorkspaceSummary],
+  );
 
   const setTaskStatus = useCallback((nodeId: string, status: TaskStatus) => {
     const node = snapshot.nodes.find((entry) => entry.id === nodeId);
@@ -1678,24 +1722,26 @@ function PlannerApp() {
     try {
       await flushProjectGraphSync();
       const created = await createWorkspace({ name: name.trim() });
+      mergeWorkspaceSummary(created);
       await loadWorkspaceTree();
       showEmptyWorkspace(created.workspaceId);
       setIsWorkspaceMenuOpen(false);
     } catch (error) {
       setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not create the workspace.');
     }
-  }, [flushProjectGraphSync, loadWorkspaceTree, showEmptyWorkspace]);
+  }, [flushProjectGraphSync, loadWorkspaceTree, mergeWorkspaceSummary, showEmptyWorkspace]);
 
   const renameWorkspace = useCallback(async (workspace: WorkspaceSummary) => {
     const name = window.prompt('Rename workspace', workspace.name);
     if (name === null || !name.trim() || name.trim() === workspace.name) return;
     try {
-      await updateWorkspace(workspace.workspaceId, { name: name.trim() });
+      const updatedWorkspace = await updateWorkspace(workspace.workspaceId, { name: name.trim() });
+      mergeWorkspaceSummary(updatedWorkspace);
       await loadWorkspaceTree();
     } catch (error) {
       setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not rename the workspace.');
     }
-  }, [loadWorkspaceTree]);
+  }, [loadWorkspaceTree, mergeWorkspaceSummary]);
 
   const removeWorkspace = useCallback(async (workspace: WorkspaceSummary) => {
     const confirmation = window.prompt(`Type "${workspace.name}" to delete this workspace and all of its projects.`);
@@ -1869,49 +1915,81 @@ function PlannerApp() {
   }, [appendSessionJournal, snapshot]);
 
   const panelTags = panelMode === 'root' ? snapshot.root.tags : panelItem?.tags ?? [];
-  const normalizedTagQuery = normalizeTag(tagQuery);
-  const knownTags = useMemo(() => getAllKnownTags(snapshot), [snapshot]);
-  const visibleTags = useMemo(
-    () => knownTags.filter((tag) => matchesTagQuery(tag, normalizedTagQuery)),
-    [knownTags, normalizedTagQuery],
-  );
-  const visibleTagTree = useMemo(() => buildTagTree(visibleTags), [visibleTags]);
-  const canCreateTag =
-    Boolean(normalizedTagQuery) &&
-    !knownTags.includes(normalizedTagQuery) &&
-    !panelTags.includes(normalizedTagQuery);
+  const knownTags = useMemo(() => normalizeTagList(workspaceTags), [workspaceTags]);
 
   const togglePanelTag = useCallback(
     (tag: string) => {
+      if (!panelItem) {
+        return;
+      }
       const normalizedTag = normalizeTag(tag);
       if (!normalizedTag) {
         return;
       }
 
-      const toggle = (currentTags: string[]) =>
+      setNodeTags(panelItem.id, (currentTags) =>
         currentTags.includes(normalizedTag)
           ? currentTags.filter((entry) => entry !== normalizedTag)
-          : [...currentTags, normalizedTag].sort((left, right) => left.localeCompare(right));
+          : [...currentTags, normalizedTag].sort((left, right) => left.localeCompare(right)),
+      );
+    },
+    [panelItem, setNodeTags],
+  );
 
-      if (panelMode === 'root') {
-        setRootTags(toggle);
+  const normalizedNodeTagModalQuery = normalizeTag(nodeTagModalQuery);
+  const visibleWorkspaceTags = useMemo(
+    () => knownTags.filter((tag) => matchesTagQuery(tag, normalizedNodeTagModalQuery)),
+    [knownTags, normalizedNodeTagModalQuery],
+  );
+  const visibleWorkspaceTagTree = useMemo(() => buildTagTree(visibleWorkspaceTags), [visibleWorkspaceTags]);
+  const canCreateWorkspaceTag =
+    Boolean(normalizedNodeTagModalQuery) &&
+    !knownTags.includes(normalizedNodeTagModalQuery);
+
+  const toggleNodeTagFromModal = useCallback(
+    async (tag: string) => {
+      if (!tagTargetNode) {
+        return;
+      }
+      const normalizedTag = normalizeTag(tag);
+      if (!normalizedTag) {
         return;
       }
 
-      if (panelItem) {
-        setNodeTags(panelItem.id, toggle);
+      if (!knownTags.includes(normalizedTag)) {
+        try {
+          await persistWorkspaceTags([...knownTags, normalizedTag]);
+        } catch (error) {
+          showNotification(error instanceof Error ? error.message : 'Could not update workspace tags.', 'error');
+          return;
+        }
       }
+
+      setNodeTags(tagTargetNode.id, (currentTags) =>
+        currentTags.includes(normalizedTag)
+          ? currentTags.filter((entry) => entry !== normalizedTag)
+          : [...currentTags, normalizedTag].sort((left, right) => left.localeCompare(right)),
+      );
     },
-    [panelMode, panelItem, setNodeTags, setRootTags],
+    [knownTags, persistWorkspaceTags, setNodeTags, showNotification, tagTargetNode],
   );
 
-  const createTagFromQuery = useCallback(() => {
-    if (!normalizedTagQuery) {
+  const createWorkspaceTagFromModal = useCallback(async () => {
+    if (!tagTargetNode || !normalizedNodeTagModalQuery) {
       return;
     }
-    togglePanelTag(normalizedTagQuery);
-    setTagQuery('');
-  }, [normalizedTagQuery, togglePanelTag]);
+    try {
+      await persistWorkspaceTags([...knownTags, normalizedNodeTagModalQuery]);
+      setNodeTags(tagTargetNode.id, (currentTags) =>
+        currentTags.includes(normalizedNodeTagModalQuery)
+          ? currentTags
+          : [...currentTags, normalizedNodeTagModalQuery].sort((left, right) => left.localeCompare(right)),
+      );
+      setNodeTagModalQuery('');
+    } catch (error) {
+      showNotification(error instanceof Error ? error.message : 'Could not create the tag.', 'error');
+    }
+  }, [knownTags, normalizedNodeTagModalQuery, persistWorkspaceTags, setNodeTags, showNotification, tagTargetNode]);
 
   const saveProject = useCallback(() => {
     const file = serializeProjectFile(projectId, snapshot, openTabs, activeTabId, selectedNodeId);
@@ -2171,7 +2249,6 @@ function PlannerApp() {
                     >
                       <Check aria-hidden="true" />
                     </button>
-                    <span className="available-task-row__status" title="Available" aria-label="Available" />
                   </div>
                 ))
               )}
@@ -2586,38 +2663,24 @@ function PlannerApp() {
                               ))}
                             </div>
                           ) : null}
-                          <div className="node-tag-editor__controls">
-                            <input
-                              value={tagQuery}
-                              onChange={(event) => setTagQuery(event.target.value)}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Enter' && canCreateTag) {
-                                  event.preventDefault();
-                                  createTagFromQuery();
-                                }
-                              }}
-                              placeholder="Tag.Path"
-                              aria-label="Tag path"
-                            />
+                          <div className="node-tag-editor__actions">
                             <button
                               type="button"
-                              onClick={createTagFromQuery}
-                              disabled={!canCreateTag}
-                              aria-label="Create tag path"
-                              title="Create tag path"
+                              className="node-tag-editor__open-modal"
+                              onClick={() => {
+                                setNodeTagModalQuery('');
+                                setIsNodeTagModalOpen(true);
+                              }}
                             >
                               <Plus aria-hidden="true" />
+                              Add tag
                             </button>
                           </div>
-                          {visibleTagTree.length > 0 ? (
-                            <div className="tag-browser">
-                              <TagTree nodes={visibleTagTree} selectedTags={panelTags} onToggle={togglePanelTag} />
-                            </div>
-                          ) : tagQuery ? (
-                            <p className="node-tag-editor__empty">Press Enter to create this tag path.</p>
-                          ) : (
-                            <p className="node-tag-editor__empty">No tags in this project yet.</p>
-                          )}
+                          <p className="node-tag-editor__empty">
+                            {workspaceTags.length > 0
+                              ? 'Browse workspace tags or create a new one in the tag picker.'
+                              : 'Create the first workspace tag from the tag picker.'}
+                          </p>
                         </section>
                       </>
                     ) : (
@@ -2630,6 +2693,65 @@ function PlannerApp() {
           </section>
         </div>
       </div>
+
+      {isNodeTagModalOpen && tagTargetNode ? (
+        <div className="settings-overlay" role="dialog" aria-modal="true" aria-label={`Add tags to ${tagTargetNode.title}`}>
+          <button
+            type="button"
+            className="settings-overlay__scrim"
+            onClick={() => setIsNodeTagModalOpen(false)}
+            aria-label="Close tag picker"
+          />
+          <div className="settings-overlay__panel tag-modal__panel">
+            <div className="panel settings-panel settings-panel--overlay tag-modal">
+              <div className="panel-header">
+                <h2>Tag Picker</h2>
+                <button
+                  type="button"
+                  className="icon-button secondary"
+                  onClick={() => setIsNodeTagModalOpen(false)}
+                  aria-label="Close tag picker"
+                >
+                  <X aria-hidden="true" />
+                </button>
+              </div>
+              <p className="muted tag-modal__subtitle">Workspace tags for {tagTargetNode.title}</p>
+              <div className="node-tag-editor__controls tag-modal__controls">
+                <input
+                  value={nodeTagModalQuery}
+                  onChange={(event) => setNodeTagModalQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && canCreateWorkspaceTag) {
+                      event.preventDefault();
+                      void createWorkspaceTagFromModal();
+                    }
+                  }}
+                  placeholder="Tag.Path"
+                  aria-label="New workspace tag"
+                />
+                <button
+                  type="button"
+                  onClick={() => void createWorkspaceTagFromModal()}
+                  disabled={!canCreateWorkspaceTag}
+                  aria-label="Create new workspace tag"
+                  title="Create new workspace tag"
+                >
+                  <Plus aria-hidden="true" />
+                </button>
+              </div>
+              {visibleWorkspaceTagTree.length > 0 ? (
+                <div className="tag-browser tag-modal__browser">
+                  <TagTree nodes={visibleWorkspaceTagTree} selectedTags={tagTargetNode.tags} onToggle={(tag) => void toggleNodeTagFromModal(tag)} />
+                </div>
+              ) : nodeTagModalQuery ? (
+                <p className="node-tag-editor__empty">Press Enter to create this new workspace tag.</p>
+              ) : (
+                <p className="node-tag-editor__empty">No workspace tags yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {isSettingsOpen ? (
         <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="Settings">

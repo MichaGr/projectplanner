@@ -30,6 +30,7 @@ class WorkspaceModel(Base):
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     name: Mapped[str] = mapped_column(Text, default="")
     description: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[list[str]] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -186,6 +187,7 @@ class CreateWorkspaceRequest(BaseModel):
 class UpdateWorkspaceRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
+    tags: list[str] | None = None
 
 
 class CreateProjectRequest(BaseModel):
@@ -255,6 +257,7 @@ class WorkspaceListItem(BaseModel):
     workspaceId: str
     name: str
     description: str
+    tags: list[str]
     projectCount: int
     createdAt: str
     updatedAt: str
@@ -287,6 +290,26 @@ class CompleteTaskResponse(BaseModel):
     graphVersion: int
 
 
+def normalize_tag(value: str) -> str:
+    return ".".join(segment.strip() for segment in value.split(".") if segment.strip())
+
+
+def normalize_tags(tags: list[str]) -> list[str]:
+    normalized: set[str] = set()
+    for tag in tags:
+        value = normalize_tag(tag)
+        if value:
+            normalized.add(value)
+    return sorted(normalized)
+
+
+def collect_snapshot_tags(snapshot: PlannerSnapshotPayload) -> list[str]:
+    return normalize_tags([
+        *snapshot.root.tags,
+        *(tag for node in snapshot.nodes for tag in node.tags),
+    ])
+
+
 def serialize_project(project: ProjectModel) -> PlannerSnapshotPayload:
     nodes = sorted(project.nodes, key=lambda node: node.id)
     edges = sorted(project.edges, key=lambda edge: edge.id)
@@ -296,7 +319,7 @@ def serialize_project(project: ProjectModel) -> PlannerSnapshotPayload:
             title=project.title,
             description=project.description,
             completionCriteria=project.completion_criteria,
-            tags=list(project.tags or []),
+            tags=[],
         ),
         nodes=[
             NodePayload(
@@ -342,6 +365,7 @@ def serialize_workspace(workspace: WorkspaceModel) -> WorkspaceListItem:
         workspaceId=workspace.id,
         name=workspace.name,
         description=workspace.description,
+        tags=normalize_tags(list(workspace.tags or [])),
         projectCount=len(projects),
         createdAt=workspace.created_at.isoformat(),
         updatedAt=workspace.updated_at.isoformat(),
@@ -350,7 +374,7 @@ def serialize_workspace(workspace: WorkspaceModel) -> WorkspaceListItem:
 
 
 def create_default_workspace(session: Session) -> WorkspaceModel:
-    workspace = WorkspaceModel(id=str(uuid4()), name="Default Workspace", description="")
+    workspace = WorkspaceModel(id=str(uuid4()), name="Default Workspace", description="", tags=[])
     session.add(workspace)
     session.flush()
     return workspace
@@ -526,9 +550,11 @@ def replace_graph(session: Session, project: ProjectModel, snapshot: PlannerSnap
     project.title = snapshot.root.title
     project.description = snapshot.root.description
     project.completion_criteria = snapshot.root.completionCriteria
-    project.tags = list(snapshot.root.tags)
+    project.tags = []
+    project.workspace.tags = normalize_tags([*list(project.workspace.tags or []), *collect_snapshot_tags(snapshot)])
     project.graph_version += 1
     project.updated_at = utc_now()
+    project.workspace.updated_at = project.updated_at
 
     session.execute(delete(EdgeModel).where(EdgeModel.project_id == project.id))
     session.execute(delete(NodeModel).where(NodeModel.project_id == project.id))
@@ -635,6 +661,11 @@ def health(session: Session = Depends(get_session)):
 @app.get("/api/workspaces", response_model=list[WorkspaceListItem])
 def list_workspaces(session: Session = Depends(get_session)):
     workspaces = session.scalars(select(WorkspaceModel).order_by(WorkspaceModel.updated_at.desc())).all()
+    if not workspaces:
+        workspace = create_default_workspace(session)
+        session.commit()
+        session.refresh(workspace)
+        workspaces = [workspace]
     return [serialize_workspace(workspace) for workspace in workspaces]
 
 
@@ -697,6 +728,8 @@ def update_workspace(
         workspace.name = name
     if payload.description is not None:
         workspace.description = payload.description.strip()
+    if payload.tags is not None:
+        workspace.tags = normalize_tags(payload.tags)
     workspace.updated_at = utc_now()
     session.commit()
     session.refresh(workspace)
@@ -750,9 +783,10 @@ def create_project(
         title=snapshot.root.title or title,
         description=snapshot.root.description,
         completion_criteria=snapshot.root.completionCriteria,
-        tags=list(snapshot.root.tags),
+        tags=[],
         graph_version=1,
     )
+    workspace.tags = normalize_tags([*list(workspace.tags or []), *collect_snapshot_tags(snapshot)])
     workspace.updated_at = utc_now()
     session.add(project)
     session.flush()
@@ -788,7 +822,8 @@ def update_project(
     if payload.completionCriteria is not None:
         project.completion_criteria = payload.completionCriteria
     if payload.tags is not None:
-        project.tags = list(payload.tags)
+        project.workspace.tags = normalize_tags([*list(project.workspace.tags or []), *payload.tags])
+    project.tags = []
     project.graph_version += 1
     project.updated_at = utc_now()
     project.workspace.updated_at = project.updated_at

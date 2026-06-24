@@ -7,6 +7,7 @@ const workspace = {
   workspaceId: 'workspace-1',
   name: 'Personal',
   description: '',
+  tags: [],
   projectCount: 2,
   createdAt: '',
   updatedAt: '',
