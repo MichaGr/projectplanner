@@ -2031,7 +2031,7 @@ function PlannerApp() {
               }));
             }}
           />
-          <div className="editor-sidebar__primary">
+          {/*<div className="editor-sidebar__primary">
             <button
               type="button"
               className="new-node-button"
@@ -2041,7 +2041,7 @@ function PlannerApp() {
               <Plus aria-hidden="true" />
               New Node
             </button>
-          </div>
+          </div>*/}
 
           <WorkspaceProjectNavigation
             workspaces={workspaces}
