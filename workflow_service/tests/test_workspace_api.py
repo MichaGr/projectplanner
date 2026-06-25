@@ -45,11 +45,19 @@ def create_project(client: TestClient, workspace_id: str, title: str = "Launch")
 
 
 def replace_graph(client: TestClient, workspace_id: str, project_id: str, graph: dict) -> dict:
+    project = client.get(f"/api/workspaces/{workspace_id}/projects/{project_id}/graph")
+    assert project.status_code == 200
+    graph_version = project.json()["graphVersion"]
     response = client.post(
         f"/api/workspaces/{workspace_id}/projects/{project_id}/operations",
-        json={"operations": [{"type": "replace_graph", "project": graph}]},
+        json={
+            "transactionId": "replace-graph",
+            "baseGraphVersion": graph_version,
+            "operations": [{"type": "replace_graph", "project": graph}],
+        },
     )
     assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
     return response.json()
 
 
@@ -108,9 +116,14 @@ def test_graph_operations_remain_workspace_scoped(client: TestClient):
     }
     response = client.post(
         f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/operations",
-        json={"operations": [{"type": "replace_graph", "project": graph}]},
+        json={
+            "transactionId": "graph-scope",
+            "baseGraphVersion": project["graphVersion"],
+            "operations": [{"type": "replace_graph", "project": graph}],
+        },
     )
     assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
     assert response.json()["workspaceId"] == workspace["workspaceId"]
     assert response.json()["project"]["nodes"][0]["id"] == "task-1"
 
@@ -272,7 +285,11 @@ def test_node_metadata_dates_tags_and_created_at_are_persisted(client: TestClien
     graph["nodes"][0]["doDate"] = "2026-07-05"
     invalid = client.post(
         f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/operations",
-        json={"operations": [{"type": "replace_graph", "project": graph}]},
+        json={
+            "transactionId": "invalid-graph",
+            "baseGraphVersion": stored_again["graphVersion"],
+            "operations": [{"type": "replace_graph", "project": graph}],
+        },
     )
     assert invalid.status_code == 422
 
@@ -310,3 +327,130 @@ def test_workspace_tags_are_global_and_collected_from_project_nodes(client: Test
     )
     assert graph_response.status_code == 200
     assert graph_response.json()["project"]["root"]["tags"] == []
+
+
+def test_incremental_graph_operations_update_only_changed_entities(client: TestClient):
+    workspace = create_workspace(client)
+    project = create_project(client, workspace["workspaceId"], "Incremental Project")
+
+    replace_graph(
+        client,
+        workspace["workspaceId"],
+        project["projectId"],
+        {
+            "root": {"title": "Incremental Project", "description": "", "completionCriteria": "", "tags": []},
+            "nodes": [
+                {"id": "a", "kind": "task", "title": "Task A", "status": "todo", "position": {"x": 0, "y": 0}, "tags": []},
+                {"id": "b", "kind": "task", "title": "Task B", "status": "todo", "position": {"x": 100, "y": 0}, "tags": []},
+            ],
+            "edges": [{"id": "ab", "source": "a", "target": "b"}],
+        },
+    )
+    current_version = client.get(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}"
+    ).json()["graphVersion"]
+
+    response = client.post(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/operations",
+        json={
+            "transactionId": "incremental-update",
+            "baseGraphVersion": current_version,
+            "operations": [
+                {
+                    "type": "upsert_nodes",
+                    "nodes": [
+                        {
+                            "id": "b",
+                            "kind": "task",
+                            "title": "Task B updated",
+                            "status": "done",
+                            "position": {"x": 100, "y": 20},
+                            "tags": ["Delivery.Release"],
+                        },
+                        {
+                            "id": "c",
+                            "kind": "task",
+                            "title": "Task C",
+                            "status": "todo",
+                            "position": {"x": 220, "y": 20},
+                            "tags": [],
+                        },
+                    ],
+                },
+                {"type": "delete_edges", "edgeIds": ["ab"]},
+                {"type": "upsert_edges", "edges": [{"id": "bc", "source": "b", "target": "c"}]},
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    graph = response.json()["project"]
+    assert graph["root"]["title"] == "Incremental Project"
+    assert {node["id"]: node["title"] for node in graph["nodes"]} == {
+        "a": "Task A",
+        "b": "Task B updated",
+        "c": "Task C",
+    }
+    assert {node["id"]: node["status"] for node in graph["nodes"]}["b"] == "done"
+    assert graph["edges"] == [{"id": "bc", "source": "b", "target": "c"}]
+
+
+def test_stale_graph_version_is_rejected_with_canonical_graph(client: TestClient):
+    workspace = create_workspace(client)
+    project = create_project(client, workspace["workspaceId"], "Versioned Project")
+
+    replace_graph(
+      client,
+      workspace["workspaceId"],
+      project["projectId"],
+      {
+          "root": {"title": "Versioned Project", "description": "", "completionCriteria": "", "tags": []},
+          "nodes": [
+              {"id": "task-a", "kind": "task", "title": "Task A", "status": "todo", "position": {"x": 0, "y": 0}, "tags": []},
+          ],
+          "edges": [],
+      },
+    )
+
+    current = client.get(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/graph"
+    ).json()
+
+    accepted = client.post(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/operations",
+        json={
+            "transactionId": "accepted-update",
+            "baseGraphVersion": current["graphVersion"],
+            "operations": [
+                {
+                    "type": "upsert_nodes",
+                    "nodes": [
+                        {"id": "task-a", "kind": "task", "title": "Task A accepted", "status": "todo", "position": {"x": 0, "y": 0}, "tags": []},
+                    ],
+                }
+            ],
+        },
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "accepted"
+
+    rejected = client.post(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/operations",
+        json={
+            "transactionId": "stale-update",
+            "baseGraphVersion": current["graphVersion"],
+            "operations": [
+                {
+                    "type": "upsert_nodes",
+                    "nodes": [
+                        {"id": "task-a", "kind": "task", "title": "Task A stale", "status": "done", "position": {"x": 0, "y": 0}, "tags": []},
+                    ],
+                }
+            ],
+        },
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "rejected"
+    assert rejected.json()["code"] == "stale_graph_version"
+    assert rejected.json()["project"]["nodes"][0]["title"] == "Task A accepted"

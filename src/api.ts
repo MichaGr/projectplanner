@@ -1,6 +1,7 @@
 export type ProjectGraphResponse = {
   workspaceId: string;
   projectId: string;
+  graphVersion: number;
   project: unknown;
 };
 
@@ -47,15 +48,33 @@ export type CompleteTaskResponse = {
 
 export type GraphOperationRequest =
   | { type: 'replace_graph'; project: unknown }
-  | {
-      type: 'update_node_fields';
-      targetType: 'root' | 'node';
-      targetId: string;
-      fields: { title?: string; description?: string; completionCriteria?: string };
-    }
-  | { type: 'create_group'; group: unknown }
-  | { type: 'create_tasks'; tasks: unknown[] }
-  | { type: 'create_edges'; edges: unknown[] };
+  | { type: 'update_root'; root: unknown }
+  | { type: 'upsert_nodes'; nodes: unknown[] }
+  | { type: 'delete_nodes'; nodeIds: string[] }
+  | { type: 'upsert_edges'; edges: unknown[] }
+  | { type: 'delete_edges'; edgeIds: string[] };
+
+export type ApplyProjectOperationsRequest = {
+  transactionId: string;
+  baseGraphVersion: number;
+  operations: GraphOperationRequest[];
+};
+
+export type ApplyProjectOperationsAcceptedResponse = ProjectGraphResponse & {
+  status: 'accepted';
+  transactionId: string;
+};
+
+export type ApplyProjectOperationsRejectedResponse = ProjectGraphResponse & {
+  status: 'rejected';
+  transactionId: string;
+  code: string;
+  message: string;
+};
+
+export type ApplyProjectOperationsResponse =
+  | ApplyProjectOperationsAcceptedResponse
+  | ApplyProjectOperationsRejectedResponse;
 
 export class ApiError extends Error {
   status: number;
@@ -202,14 +221,14 @@ export const completeAvailableTask = async (
 export const applyProjectGraphOperations = async (
   workspaceId: string,
   projectId: string,
-  operations: GraphOperationRequest[],
-): Promise<ProjectGraphResponse> => {
+  payload: ApplyProjectOperationsRequest,
+): Promise<ApplyProjectOperationsResponse> => {
   const response = await fetch(`${projectUrl(workspaceId, projectId)}/operations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ operations }),
+    body: JSON.stringify(payload),
   });
-  return ensureOk<ProjectGraphResponse>(response);
+  return ensureOk<ApplyProjectOperationsResponse>(response);
 };
 
 export const checkWorkflowService = async (): Promise<{ status: string }> => {

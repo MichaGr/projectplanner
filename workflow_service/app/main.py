@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, insert, select
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, selectinload, sessionmaker
@@ -202,26 +201,29 @@ class UpdateProjectRequest(BaseModel):
     tags: list[str] | None = None
 
 
-class UpdateNodeFieldsOperation(BaseModel):
-    type: Literal["update_node_fields"]
-    targetType: Literal["root", "node"]
-    targetId: str
-    fields: dict[str, str]
+class UpdateRootOperation(BaseModel):
+    type: Literal["update_root"]
+    root: RootPayload
 
 
-class CreateGroupOperation(BaseModel):
-    type: Literal["create_group"]
-    group: NodePayload
+class UpsertNodesOperation(BaseModel):
+    type: Literal["upsert_nodes"]
+    nodes: list[NodePayload]
 
 
-class CreateTasksOperation(BaseModel):
-    type: Literal["create_tasks"]
-    tasks: list[NodePayload]
+class DeleteNodesOperation(BaseModel):
+    type: Literal["delete_nodes"]
+    nodeIds: list[str]
 
 
-class CreateEdgesOperation(BaseModel):
-    type: Literal["create_edges"]
+class UpsertEdgesOperation(BaseModel):
+    type: Literal["upsert_edges"]
     edges: list[EdgePayload]
+
+
+class DeleteEdgesOperation(BaseModel):
+    type: Literal["delete_edges"]
+    edgeIds: list[str]
 
 
 class ReplaceGraphOperation(BaseModel):
@@ -229,17 +231,39 @@ class ReplaceGraphOperation(BaseModel):
     project: PlannerSnapshotPayload
 
 
-GraphOperation = UpdateNodeFieldsOperation | CreateGroupOperation | CreateTasksOperation | CreateEdgesOperation | ReplaceGraphOperation
+GraphOperation = (
+    UpdateRootOperation
+    | UpsertNodesOperation
+    | DeleteNodesOperation
+    | UpsertEdgesOperation
+    | DeleteEdgesOperation
+    | ReplaceGraphOperation
+)
 
 
 class OperationsRequest(BaseModel):
+    transactionId: str
+    baseGraphVersion: int
     operations: list[GraphOperation]
 
 
 class ProjectGraphResponse(BaseModel):
     workspaceId: str
     projectId: str
+    graphVersion: int
     project: PlannerSnapshotPayload
+
+
+class ApplyProjectOperationsAcceptedResponse(ProjectGraphResponse):
+    status: Literal["accepted"]
+    transactionId: str
+
+
+class ApplyProjectOperationsRejectedResponse(ProjectGraphResponse):
+    status: Literal["rejected"]
+    transactionId: str
+    code: str
+    message: str
 
 
 class ProjectListItem(BaseModel):
@@ -288,6 +312,33 @@ class CompleteTaskResponse(BaseModel):
     taskId: str
     status: Literal["done"]
     graphVersion: int
+
+
+def serialize_project_response(project: ProjectModel, workspace_id: str | None = None) -> ProjectGraphResponse:
+    return ProjectGraphResponse(
+        workspaceId=workspace_id or project.workspace_id,
+        projectId=project.id,
+        graphVersion=project.graph_version,
+        project=serialize_project(project),
+    )
+
+
+def build_rejected_operations_response(
+    *,
+    project: ProjectModel,
+    transaction_id: str,
+    code: str,
+    message: str,
+    workspace_id: str | None = None,
+) -> ApplyProjectOperationsRejectedResponse:
+    response = serialize_project_response(project, workspace_id)
+    return ApplyProjectOperationsRejectedResponse(
+        status="rejected",
+        transactionId=transaction_id,
+        code=code,
+        message=message,
+        **response.model_dump(),
+    )
 
 
 def normalize_tag(value: str) -> str:
@@ -399,6 +450,24 @@ def ensure_project(session: Session, workspace_id: str, project_id: str) -> Proj
     return project
 
 
+def load_project_graph(session: Session, workspace_id: str, project_id: str, *, for_update: bool = False) -> ProjectModel:
+    query = (
+        select(ProjectModel)
+        .where(ProjectModel.id == project_id, ProjectModel.workspace_id == workspace_id)
+        .options(
+            selectinload(ProjectModel.workspace),
+            selectinload(ProjectModel.nodes),
+            selectinload(ProjectModel.edges),
+        )
+    )
+    if for_update:
+        query = query.with_for_update()
+    project = session.scalar(query)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return project
+
+
 def validate_snapshot(snapshot: PlannerSnapshotPayload) -> None:
     node_ids = {node.id for node in snapshot.nodes}
     if len(node_ids) != len(snapshot.nodes):
@@ -446,63 +515,107 @@ def validate_snapshot(snapshot: PlannerSnapshotPayload) -> None:
         visit(node_id)
 
 
-def is_task_available(project: ProjectModel, task: NodeModel) -> bool:
-    if task.kind != "task" or task.status == "done":
-        return False
+def build_snapshot_availability_index(snapshot: PlannerSnapshotPayload):
+    nodes_by_id = {node.id: node for node in snapshot.nodes}
+    children_by_parent: dict[str, list[NodePayload]] = {}
+    incoming_by_target: dict[str, list[EdgePayload]] = {}
 
-    nodes_by_id = {node.id: node for node in project.nodes}
-    children_by_parent: dict[str, list[NodeModel]] = {}
-    for node in project.nodes:
-        if node.parent_node_id:
-            children_by_parent.setdefault(node.parent_node_id, []).append(node)
+    for node in snapshot.nodes:
+        if node.parentId:
+            children_by_parent.setdefault(node.parentId, []).append(node)
 
+    for edge in snapshot.edges:
+        incoming_by_target.setdefault(edge.target, []).append(edge)
+
+    descendant_task_ids_cache: dict[str, list[str]] = {}
     completion_cache: dict[str, bool] = {}
+    availability_cache: dict[str, bool] = {}
+    ancestor_group_ids_cache: dict[str, list[str]] = {}
 
-    def node_is_complete(node_id: str) -> bool:
-        if node_id in completion_cache:
-            return completion_cache[node_id]
+    def get_descendant_task_ids(node_id: str) -> list[str]:
+        cached = descendant_task_ids_cache.get(node_id)
+        if cached is not None:
+            return cached
+
+        result: list[str] = []
+        for child in children_by_parent.get(node_id, []):
+            if child.kind == "task":
+                result.append(child.id)
+            else:
+                result.extend(get_descendant_task_ids(child.id))
+        descendant_task_ids_cache[node_id] = result
+        return result
+
+    def is_node_complete(node_id: str) -> bool:
+        cached = completion_cache.get(node_id)
+        if cached is not None:
+            return cached
+
         node = nodes_by_id.get(node_id)
         if not node:
             return False
+
         if node.kind == "task":
             result = node.status == "done"
         else:
-            descendant_tasks: list[NodeModel] = []
-            pending = list(children_by_parent.get(node.id, []))
-            while pending:
-                child = pending.pop()
-                if child.kind == "task":
-                    descendant_tasks.append(child)
-                else:
-                    pending.extend(children_by_parent.get(child.id, []))
-            result = bool(descendant_tasks) and all(child.status == "done" for child in descendant_tasks)
+            descendant_task_ids = get_descendant_task_ids(node_id)
+            result = bool(descendant_task_ids) and all(is_node_complete(task_id) for task_id in descendant_task_ids)
         completion_cache[node_id] = result
         return result
 
-    blocker_targets = {task.id}
-    parent_id = task.parent_node_id
-    while parent_id:
-        blocker_targets.add(parent_id)
-        parent_id = nodes_by_id.get(parent_id).parent_node_id if nodes_by_id.get(parent_id) else None
+    def get_ancestor_group_ids(node_id: str) -> list[str]:
+        cached = ancestor_group_ids_cache.get(node_id)
+        if cached is not None:
+            return cached
 
-    blockers = [edge for edge in project.edges if edge.target_node_id in blocker_targets]
-    return all(node_is_complete(edge.source_node_id) for edge in blockers)
+        result: list[str] = []
+        parent_id = nodes_by_id.get(node_id).parentId if nodes_by_id.get(node_id) else None
+        while parent_id:
+            result.append(parent_id)
+            parent = nodes_by_id.get(parent_id)
+            parent_id = parent.parentId if parent else None
+        ancestor_group_ids_cache[node_id] = result
+        return result
+
+    def is_task_available(task_id: str) -> bool:
+        cached = availability_cache.get(task_id)
+        if cached is not None:
+            return cached
+
+        node = nodes_by_id.get(task_id)
+        if not node or node.kind != "task" or is_node_complete(task_id):
+            availability_cache[task_id] = False
+            return False
+
+        blockers = list(incoming_by_target.get(task_id, []))
+        for group_id in get_ancestor_group_ids(task_id):
+            blockers.extend(incoming_by_target.get(group_id, []))
+
+        result = all(is_node_complete(edge.source) for edge in blockers)
+        availability_cache[task_id] = result
+        return result
+
+    return is_task_available
 
 
 def available_task_items(projects: list[ProjectModel]) -> list[AvailableTaskItem]:
-    items = [
-        AvailableTaskItem(
-            workspaceId=project.workspace_id,
-            workspaceName=project.workspace.name,
-            projectId=project.id,
-            projectTitle=project.title,
-            taskId=node.id,
-            title=node.title,
-        )
-        for project in projects
-        for node in project.nodes
-        if is_task_available(project, node)
-    ]
+    items: list[AvailableTaskItem] = []
+    for project in projects:
+        snapshot = serialize_project(project)
+        is_task_available = build_snapshot_availability_index(snapshot)
+        for node in snapshot.nodes:
+            if node.kind != "task" or not is_task_available(node.id):
+                continue
+            items.append(
+                AvailableTaskItem(
+                    workspaceId=project.workspace_id,
+                    workspaceName=project.workspace.name,
+                    projectId=project.id,
+                    projectTitle=project.title,
+                    taskId=node.id,
+                    title=node.title,
+                )
+            )
     return sorted(
         items,
         key=lambda item: (
@@ -542,10 +655,15 @@ def order_nodes_for_insert(nodes: list[NodePayload]) -> list[NodePayload]:
     return ordered
 
 
-def replace_graph(session: Session, project: ProjectModel, snapshot: PlannerSnapshotPayload) -> None:
+def apply_snapshot_to_project(session: Session, project: ProjectModel, snapshot: PlannerSnapshotPayload) -> None:
     validate_snapshot(snapshot)
 
-    created_at_by_node_id = {node.id: node.created_at for node in project.nodes}
+    existing_nodes_by_id = {node.id: node for node in project.nodes}
+    existing_edges_by_id = {edge.id: edge for edge in project.edges}
+    existing_node_ids = set(existing_nodes_by_id)
+    existing_edge_ids = set(existing_edges_by_id)
+    next_node_ids = {node.id for node in snapshot.nodes}
+    next_edge_ids = {edge.id for edge in snapshot.edges}
 
     project.title = snapshot.root.title
     project.description = snapshot.root.description
@@ -556,52 +674,72 @@ def replace_graph(session: Session, project: ProjectModel, snapshot: PlannerSnap
     project.updated_at = utc_now()
     project.workspace.updated_at = project.updated_at
 
-    session.execute(delete(EdgeModel).where(EdgeModel.project_id == project.id))
-    session.execute(delete(NodeModel).where(NodeModel.project_id == project.id))
-
     timestamp = utc_now()
+    for edge_id in existing_edge_ids - next_edge_ids:
+        session.delete(existing_edges_by_id[edge_id])
+
+    for node_id in existing_node_ids - next_node_ids:
+        session.delete(existing_nodes_by_id[node_id])
+
     ordered_nodes = order_nodes_for_insert(snapshot.nodes)
-    if ordered_nodes:
-        session.execute(
-            insert(NodeModel),
-            [
-                {
-                    "id": node.id,
-                    "project_id": project.id,
-                    "kind": node.kind,
-                    "title": node.title,
-                    "status": node.status,
-                    "description": node.description,
-                    "completion_criteria": node.completionCriteria,
-                    "tags": list(node.tags),
-                    "due_date": node.dueDate,
-                    "do_date": node.doDate,
-                    "parent_node_id": node.parentId,
-                    "position_x": node.position["x"],
-                    "position_y": node.position["y"],
-                    "width": node.size["width"] if node.size else None,
-                    "height": node.size["height"] if node.size else None,
-                    "created_at": created_at_by_node_id.get(node.id, timestamp),
-                    "updated_at": timestamp,
-                }
-                for node in ordered_nodes
-            ],
+    for node in ordered_nodes:
+        existing = existing_nodes_by_id.get(node.id)
+        if existing:
+            existing.kind = node.kind
+            existing.title = node.title
+            existing.status = node.status
+            existing.description = node.description
+            existing.completion_criteria = node.completionCriteria
+            existing.tags = list(node.tags)
+            existing.due_date = node.dueDate
+            existing.do_date = node.doDate
+            existing.parent_node_id = node.parentId
+            existing.position_x = node.position["x"]
+            existing.position_y = node.position["y"]
+            existing.width = node.size["width"] if node.size else None
+            existing.height = node.size["height"] if node.size else None
+            existing.updated_at = timestamp
+            continue
+
+        session.add(
+            NodeModel(
+                id=node.id,
+                project_id=project.id,
+                kind=node.kind,
+                title=node.title,
+                status=node.status,
+                description=node.description,
+                completion_criteria=node.completionCriteria,
+                tags=list(node.tags),
+                due_date=node.dueDate,
+                do_date=node.doDate,
+                parent_node_id=node.parentId,
+                position_x=node.position["x"],
+                position_y=node.position["y"],
+                width=node.size["width"] if node.size else None,
+                height=node.size["height"] if node.size else None,
+                created_at=node.createdAt or timestamp,
+                updated_at=timestamp,
+            )
         )
 
-    if snapshot.edges:
-        session.execute(
-            insert(EdgeModel),
-            [
-                {
-                    "id": edge.id,
-                    "project_id": project.id,
-                    "source_node_id": edge.source,
-                    "target_node_id": edge.target,
-                    "created_at": timestamp,
-                    "updated_at": timestamp,
-                }
-                for edge in snapshot.edges
-            ],
+    for edge in snapshot.edges:
+        existing = existing_edges_by_id.get(edge.id)
+        if existing:
+            existing.source_node_id = edge.source
+            existing.target_node_id = edge.target
+            existing.updated_at = timestamp
+            continue
+
+        session.add(
+            EdgeModel(
+                id=edge.id,
+                project_id=project.id,
+                source_node_id=edge.source,
+                target_node_id=edge.target,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
         )
 
 
@@ -613,40 +751,39 @@ def apply_operations(session: Session, project: ProjectModel, operations: list[G
             snapshot = operation.project
             continue
 
-        if isinstance(operation, UpdateNodeFieldsOperation):
-            if operation.targetType == "root":
-                for key, value in operation.fields.items():
-                    if key == "title":
-                        snapshot.root.title = value
-                    elif key == "description":
-                        snapshot.root.description = value
-                    elif key == "completionCriteria":
-                        snapshot.root.completionCriteria = value
-            else:
-                target = next((node for node in snapshot.nodes if node.id == operation.targetId), None)
-                if not target:
-                    raise HTTPException(status_code=400, detail=f"Node {operation.targetId} not found.")
-                for key, value in operation.fields.items():
-                    if key == "title":
-                        target.title = value
-                    elif key == "description":
-                        target.description = value
-                    elif key == "completionCriteria":
-                        target.completionCriteria = value
+        if isinstance(operation, UpdateRootOperation):
+            snapshot.root = operation.root
             continue
 
-        if isinstance(operation, CreateGroupOperation):
-            snapshot.nodes.append(operation.group)
+        if isinstance(operation, UpsertNodesOperation):
+            by_id = {node.id: node for node in snapshot.nodes}
+            for node in operation.nodes:
+                by_id[node.id] = node
+            snapshot.nodes = list(by_id.values())
             continue
 
-        if isinstance(operation, CreateTasksOperation):
-            snapshot.nodes.extend(operation.tasks)
+        if isinstance(operation, DeleteNodesOperation):
+            deleted_ids = set(operation.nodeIds)
+            snapshot.nodes = [node for node in snapshot.nodes if node.id not in deleted_ids]
+            snapshot.edges = [
+                edge
+                for edge in snapshot.edges
+                if edge.source not in deleted_ids and edge.target not in deleted_ids
+            ]
             continue
 
-        if isinstance(operation, CreateEdgesOperation):
-            snapshot.edges.extend(operation.edges)
+        if isinstance(operation, UpsertEdgesOperation):
+            by_id = {edge.id: edge for edge in snapshot.edges}
+            for edge in operation.edges:
+                by_id[edge.id] = edge
+            snapshot.edges = list(by_id.values())
+            continue
 
-    replace_graph(session, project, snapshot)
+        if isinstance(operation, DeleteEdgesOperation):
+            deleted_ids = set(operation.edgeIds)
+            snapshot.edges = [edge for edge in snapshot.edges if edge.id not in deleted_ids]
+
+    apply_snapshot_to_project(session, project, snapshot)
 
 
 app = FastAPI(title="Project Planner Workflow Service", version="0.2.0")
@@ -790,10 +927,10 @@ def create_project(
     workspace.updated_at = utc_now()
     session.add(project)
     session.flush()
-    replace_graph(session, project, snapshot)
+    apply_snapshot_to_project(session, project, snapshot)
     session.commit()
-    session.refresh(project)
-    return ProjectGraphResponse(workspaceId=workspace.id, projectId=project.id, project=serialize_project(project))
+    stored_project = load_project_graph(session, workspace.id, project.id)
+    return serialize_project_response(stored_project, workspace.id)
 
 
 @app.get("/api/workspaces/{workspace_id}/projects/{project_id}", response_model=ProjectListItem)
@@ -803,8 +940,8 @@ def get_project(workspace_id: str, project_id: str, session: Session = Depends(g
 
 @app.get("/api/workspaces/{workspace_id}/projects/{project_id}/graph", response_model=ProjectGraphResponse)
 def get_project_graph(workspace_id: str, project_id: str, session: Session = Depends(get_session)):
-    project = ensure_project(session, workspace_id, project_id)
-    return ProjectGraphResponse(workspaceId=workspace_id, projectId=project.id, project=serialize_project(project))
+    project = load_project_graph(session, workspace_id, project_id)
+    return serialize_project_response(project, workspace_id)
 
 
 @app.patch("/api/workspaces/{workspace_id}/projects/{project_id}", response_model=ProjectGraphResponse)
@@ -829,7 +966,7 @@ def update_project(
     project.workspace.updated_at = project.updated_at
     session.commit()
     session.refresh(project)
-    return ProjectGraphResponse(workspaceId=workspace_id, projectId=project.id, project=serialize_project(project))
+    return serialize_project_response(project, workspace_id)
 
 
 @app.delete("/api/workspaces/{workspace_id}/projects/{project_id}", response_model=DeleteProjectResponse)
@@ -852,14 +989,7 @@ def complete_available_task(
     task_id: str,
     session: Session = Depends(get_session),
 ):
-    project = session.scalar(
-        select(ProjectModel)
-        .where(ProjectModel.id == project_id, ProjectModel.workspace_id == workspace_id)
-        .options(selectinload(ProjectModel.nodes), selectinload(ProjectModel.edges))
-        .with_for_update()
-    )
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found.")
+    project = load_project_graph(session, workspace_id, project_id, for_update=True)
 
     task = next((node for node in project.nodes if node.id == task_id), None)
     if not task:
@@ -868,7 +998,7 @@ def complete_available_task(
         raise HTTPException(status_code=409, detail="Only tasks can be completed.")
     if task.status == "done":
         raise HTTPException(status_code=409, detail="Task is already complete.")
-    if not is_task_available(project, task):
+    if not build_snapshot_availability_index(serialize_project(project))(task_id):
         raise HTTPException(status_code=409, detail="Task is no longer available.")
 
     timestamp = utc_now()
@@ -890,7 +1020,7 @@ def complete_available_task(
 
 @app.post(
     "/api/workspaces/{workspace_id}/projects/{project_id}/operations",
-    response_model=ProjectGraphResponse,
+    response_model=ApplyProjectOperationsAcceptedResponse | ApplyProjectOperationsRejectedResponse,
 )
 def apply_project_operations(
     workspace_id: str,
@@ -898,14 +1028,44 @@ def apply_project_operations(
     payload: OperationsRequest,
     session: Session = Depends(get_session),
 ):
-    project = ensure_project(session, workspace_id, project_id)
+    project = load_project_graph(session, workspace_id, project_id, for_update=True)
+    if payload.baseGraphVersion != project.graph_version:
+        return build_rejected_operations_response(
+            project=project,
+            workspace_id=workspace_id,
+            transaction_id=payload.transactionId,
+            code="stale_graph_version",
+            message="The graph changed on the server before this change could be approved.",
+        )
     try:
         apply_operations(session, project, payload.operations)
         project.workspace.updated_at = utc_now()
         session.commit()
+    except HTTPException as error:
+        session.rollback()
+        current_project = load_project_graph(session, workspace_id, project_id)
+        return build_rejected_operations_response(
+            project=current_project,
+            workspace_id=workspace_id,
+            transaction_id=payload.transactionId,
+            code="validation_error",
+            message=str(error.detail),
+        )
     except IntegrityError as error:
         session.rollback()
-        raise HTTPException(status_code=400, detail="Duplicate edge or invalid graph mutation.") from error
+        current_project = load_project_graph(session, workspace_id, project_id)
+        return build_rejected_operations_response(
+            project=current_project,
+            workspace_id=workspace_id,
+            transaction_id=payload.transactionId,
+            code="conflict",
+            message="Duplicate edge or invalid graph mutation.",
+        )
 
-    session.refresh(project)
-    return ProjectGraphResponse(workspaceId=workspace_id, projectId=project.id, project=serialize_project(project))
+    stored_project = load_project_graph(session, workspace_id, project_id)
+    response = serialize_project_response(stored_project, workspace_id)
+    return ApplyProjectOperationsAcceptedResponse(
+        status="accepted",
+        transactionId=payload.transactionId,
+        **response.model_dump(),
+    )

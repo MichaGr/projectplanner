@@ -42,6 +42,8 @@ export type PlannerSnapshot = {
   edges: PlannerEdgeRecord[];
 };
 
+export type GraphVersion = number;
+
 export type TabDescriptor =
   | { id: 'main'; kind: 'main' }
   | { id: string; kind: 'group' };
@@ -129,3 +131,47 @@ export type SessionJournalEntry = JournalEntryBase & {
 export type BackendStatus = 'checking' | 'online' | 'offline';
 export type TaskScopePreference = { mode: AvailableTaskScope };
 export type TransientNotification = { id: number; message: string; tone: 'info' | 'error' };
+
+export type InteractiveDraftTarget = { targetType: 'root'; targetId: 'root' } | { targetType: 'node'; targetId: string };
+
+export type InteractiveDraftFields = Partial<{
+  title: string;
+  description: string;
+  completionCriteria: string;
+  dueDate: string | null;
+  doDate: string | null;
+}>;
+
+export type InteractiveDraft = InteractiveDraftTarget & {
+  fields: InteractiveDraftFields;
+  activeField: 'title' | 'description' | 'completionCriteria' | 'dueDate' | 'doDate' | null;
+  dirty: boolean;
+  needsRevalidation: boolean;
+  removedByRollback: boolean;
+};
+
+export type InteractiveDraftMap = Record<string, InteractiveDraft>;
+
+export type GraphTransaction = {
+  id: string;
+  workspaceId: string;
+  projectId: string;
+  baseGraphVersion: GraphVersion;
+  operations: import('../../../api').GraphOperationRequest[];
+  createdAt: string;
+  label: string;
+};
+
+export type PendingApprovalState = {
+  approvedSnapshot: PlannerSnapshot;
+  approvedGraphVersion: GraphVersion;
+  pendingTransactions: GraphTransaction[];
+};
+
+export type RecoveryBundle = PendingApprovalState & {
+  workspaceId: string;
+  projectId: string;
+  predictedSnapshot: PlannerSnapshot;
+  interactiveDrafts: InteractiveDraftMap;
+  savedAt: string;
+};

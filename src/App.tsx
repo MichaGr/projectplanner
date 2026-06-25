@@ -27,6 +27,7 @@ import {
   updateWorkspace,
   WorkspaceSummary,
 } from './api';
+import type { ApplyProjectOperationsRequest } from './api';
 import {
   Check,
   Menu,
@@ -44,13 +45,17 @@ import type {
   EditableNodeDateField,
   EditableNodeField,
   EditableRootField,
+  GraphTransaction,
   ImportableProjectFile,
+  InteractiveDraft,
+  InteractiveDraftMap,
   NodeDropTarget,
   NodeJournalState,
   PlannerFlowNode,
   PlannerNodeRecord,
   PlannerSnapshot,
   ProjectFileV1,
+  RecoveryBundle,
   ScopeId,
   SessionJournalEntry,
   TabDescriptor,
@@ -69,6 +74,13 @@ import { ParticleGridBackground } from './features/planner/canvas/ParticleGridBa
 import { flowEdgeTypes, flowNodeTypes } from './features/planner/canvas/FlowElements';
 import { useDebouncedLocalStorage } from './hooks/useDebouncedLocalStorage';
 import { useStableCallback } from './hooks/useStableCallback';
+import {
+  buildGraphOperations,
+  createInteractiveDraft,
+  getDraftTargetKey,
+  hasSnapshotChanges,
+  overlayInteractiveDrafts,
+} from './features/planner/state/graphTransactions';
 import { usePlannerSnapshot } from './features/planner/state/usePlannerSnapshot';
 import { ToolbarIcon } from './components/ToolbarIcon';
 import { TagTree } from './features/planner/components/TagTree';
@@ -111,9 +123,26 @@ const THEME_STORAGE_KEY = 'project-planner-theme-v1';
 const RIGHT_PANEL_WIDTH_STORAGE_KEY = 'project-planner-right-panel-width-v2';
 const PANEL_PREFERENCES_STORAGE_KEY = 'project-planner-panels-v1';
 const TASK_SCOPE_STORAGE_KEY = 'project-planner-task-scope-v1';
+const RECOVERY_BUNDLE_STORAGE_KEY = 'project-planner-recovery-v1';
 const mainTab: TabDescriptor = { id: 'main', kind: 'main' };
 const FLOW_SNAP_GRID: [number, number] = [18, 18];
 const FLOW_PRO_OPTIONS = { hideAttribution: true } as const;
+const sortAvailableTasks = (tasks: AvailableTaskItem[]) =>
+  [...tasks].sort((left, right) => {
+    const leftKey = [
+      left.workspaceName.toLowerCase(),
+      left.projectTitle.toLowerCase(),
+      left.title.toLowerCase(),
+      left.taskId,
+    ];
+    const rightKey = [
+      right.workspaceName.toLowerCase(),
+      right.projectTitle.toLowerCase(),
+      right.title.toLowerCase(),
+      right.taskId,
+    ];
+    return leftKey.join('\u0000').localeCompare(rightKey.join('\u0000'));
+  });
 const formatScopeTitle = (snapshot: PlannerSnapshot, scopeId: string | null | undefined) => {
   if (!scopeId) {
     return snapshot.root.title;
@@ -311,6 +340,32 @@ const getStoredTaskScope = (): TaskScopePreference => {
   }
 };
 
+const readRecoveryBundle = (): RecoveryBundle | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const raw = window.localStorage.getItem(RECOVERY_BUNDLE_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as RecoveryBundle;
+  } catch {
+    return null;
+  }
+};
+
+const writeRecoveryBundle = (bundle: RecoveryBundle | null) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  if (!bundle) {
+    window.localStorage.removeItem(RECOVERY_BUNDLE_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(RECOVERY_BUNDLE_STORAGE_KEY, JSON.stringify(bundle));
+};
+
 function PlannerApp() {
   const { screenToFlowPosition, setCenter, getZoom, getViewport } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -319,6 +374,8 @@ function PlannerApp() {
   const [workspaceId, setWorkspaceId] = useState<string>(() => getStoredWorkspaceId());
   const [projectId, setProjectId] = useState<string>(() => getStoredProjectId());
   const [snapshot, setSnapshot] = usePlannerSnapshot(getStoredSnapshot);
+  const [approvedSnapshot, setApprovedSnapshot] = usePlannerSnapshot(getStoredSnapshot);
+  const [approvedGraphVersion, setApprovedGraphVersion] = useState(0);
   const [themeMode] = useState<ThemeMode>(() => getStoredTheme());
   const [openTabs, setOpenTabs] = useState<TabDescriptor[]>([mainTab]);
   const [activeTabId, setActiveTabId] = useState<string>('main');
@@ -344,7 +401,7 @@ function PlannerApp() {
   const [, setSessionJournal] = useState<SessionJournalEntry[]>([]);
   const [panelPreferences, setPanelPreferences] = useState(() => getStoredPanelPreferences());
   const [taskScope, setTaskScope] = useState<TaskScopePreference>(() => getStoredTaskScope());
-  const [availableTasks, setAvailableTasks] = useState<AvailableTaskItem[]>([]);
+  const [remoteAvailableTasks, setRemoteAvailableTasks] = useState<AvailableTaskItem[]>([]);
   const [isAvailableTasksLoading, setIsAvailableTasksLoading] = useState(false);
   const [availableTasksError, setAvailableTasksError] = useState<string | null>(null);
   const [availableTasksRefreshKey, setAvailableTasksRefreshKey] = useState(0);
@@ -357,6 +414,9 @@ function PlannerApp() {
   const [isCanvasPointerDown, setIsCanvasPointerDown] = useState(false);
   const [isProjectGraphLoading, setIsProjectGraphLoading] = useState(true);
   const [graphSyncError, setGraphSyncError] = useState<string | null>(null);
+  const [pendingTransactions, setPendingTransactions] = useState<GraphTransaction[]>([]);
+  const [interactiveDrafts, setInteractiveDrafts] = useState<InteractiveDraftMap>({});
+  const [pendingRecoveryBundle, setPendingRecoveryBundle] = useState<RecoveryBundle | null>(null);
   const resizingPanelRef = useRef<'left' | 'right' | null>(null);
   const notificationIdRef = useRef(0);
   const availableTasksRequestRef = useRef(0);
@@ -364,15 +424,17 @@ function PlannerApp() {
   const multiSelectionActionsRef = useRef<HTMLDivElement | null>(null);
   const flowViewportRef = useRef({ x: 0, y: 0, zoom: 1 });
   const snapshotRef = useRef(snapshot);
+  const approvedSnapshotRef = useRef(approvedSnapshot);
+  const approvedGraphVersionRef = useRef(approvedGraphVersion);
+  const pendingTransactionsRef = useRef(pendingTransactions);
+  const interactiveDraftsRef = useRef(interactiveDrafts);
   const workspaceIdRef = useRef(workspaceId);
   const projectIdRef = useRef(projectId);
-  const isInspectorEditingRef = useRef(false);
   const isApplyingServerSnapshotRef = useRef(false);
   const hasHydratedProjectRef = useRef(false);
   const syncTimerRef = useRef<number | null>(null);
   const syncPromiseRef = useRef<Promise<void> | null>(null);
-  const syncResolveRef = useRef<(() => void) | null>(null);
-  const lastSyncedSnapshotRef = useRef(serializeSnapshot(snapshot));
+  const activeDraftKeyRef = useRef<string | null>(null);
   const activeScopeId: ScopeId = activeTabId === 'main' ? null : activeTabId;
 
   const showNotification = useCallback((message: string, tone: TransientNotification['tone'] = 'info') => {
@@ -385,9 +447,18 @@ function PlannerApp() {
     setSessionJournal((current) => nextEntries.reduce(mergeSessionJournalEntry, current));
   }, []);
 
+  const displaySnapshot = useMemo(
+    () => overlayInteractiveDrafts(snapshot, interactiveDrafts),
+    [interactiveDrafts, snapshot],
+  );
+  const hasPendingApprovals =
+    pendingTransactions.length > 0 ||
+    hasSnapshotChanges(approvedSnapshot, displaySnapshot) ||
+    Object.values(interactiveDrafts).some((draft) => draft.dirty);
+
   const plannerGraph = useMemo(
-    () => createPlannerGraphIndex(snapshot.nodes, snapshot.edges),
-    [snapshot.nodes, snapshot.edges],
+    () => createPlannerGraphIndex(displaySnapshot.nodes, displaySnapshot.edges),
+    [displaySnapshot.nodes, displaySnapshot.edges],
   );
   const scopeNodes = useMemo(() => [...plannerGraph.getScopeNodes(activeScopeId)], [plannerGraph, activeScopeId]);
   const scopeEdges = useMemo(() => [...plannerGraph.getScopeEdges(activeScopeId)], [plannerGraph, activeScopeId]);
@@ -445,6 +516,22 @@ function PlannerApp() {
   }, [snapshot]);
 
   useEffect(() => {
+    approvedSnapshotRef.current = approvedSnapshot;
+  }, [approvedSnapshot]);
+
+  useEffect(() => {
+    approvedGraphVersionRef.current = approvedGraphVersion;
+  }, [approvedGraphVersion]);
+
+  useEffect(() => {
+    pendingTransactionsRef.current = pendingTransactions;
+  }, [pendingTransactions]);
+
+  useEffect(() => {
+    interactiveDraftsRef.current = interactiveDrafts;
+  }, [interactiveDrafts]);
+
+  useEffect(() => {
     workspaceIdRef.current = workspaceId;
   }, [workspaceId]);
 
@@ -457,15 +544,26 @@ function PlannerApp() {
     projectIdRef.current = projectId;
   }, [projectId]);
 
-  const applyServerProjectGraph = useCallback((nextWorkspaceId: string, nextProjectId: string, nextSnapshot: PlannerSnapshot) => {
+  const applyServerProjectGraph = useCallback((
+    nextWorkspaceId: string,
+    nextProjectId: string,
+    nextSnapshot: PlannerSnapshot,
+    nextGraphVersion: number,
+  ) => {
     const normalizedSnapshot = sanitizeSnapshot(nextSnapshot);
     isApplyingServerSnapshotRef.current = true;
-    lastSyncedSnapshotRef.current = serializeSnapshot(normalizedSnapshot);
+    approvedSnapshotRef.current = normalizedSnapshot;
+    snapshotRef.current = normalizedSnapshot;
+    approvedGraphVersionRef.current = nextGraphVersion;
+    pendingTransactionsRef.current = [];
     setWorkspaceId(nextWorkspaceId);
     setProjectId(nextProjectId);
+    setApprovedSnapshot(normalizedSnapshot);
     setSnapshot(normalizedSnapshot);
+    setApprovedGraphVersion(nextGraphVersion);
+    setPendingTransactions([]);
     setGraphSyncError(null);
-  }, []);
+  }, [setApprovedSnapshot]);
 
   const loadWorkspaceTree = useCallback(async () => {
     setIsWorkspaceTreeLoading(true);
@@ -499,50 +597,154 @@ function PlannerApp() {
 
   const persistSnapshotToServer = useCallback(
     async (nextSnapshot?: PlannerSnapshot) => {
-      if (!workspaceIdRef.current || !projectIdRef.current) return;
-      const snapshotToPersist = sanitizeSnapshot(nextSnapshot ?? snapshotRef.current);
-      const response = await applyProjectGraphOperations(workspaceIdRef.current, projectIdRef.current, [
-        {
-          type: 'replace_graph',
-          project: snapshotToPersist,
-        },
-      ]);
+      if (!workspaceIdRef.current || !projectIdRef.current) {
+        return;
+      }
+      const snapshotToPersist = sanitizeSnapshot(
+        nextSnapshot ?? overlayInteractiveDrafts(snapshotRef.current, interactiveDraftsRef.current),
+      );
+      const approved = approvedSnapshotRef.current;
+      if (!hasSnapshotChanges(approved, snapshotToPersist)) {
+        setPendingTransactions([]);
+        return;
+      }
 
-      applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
-      setAvailableTasksRefreshKey((current) => current + 1);
+      const payload: ApplyProjectOperationsRequest = {
+        transactionId: pendingTransactionsRef.current[pendingTransactionsRef.current.length - 1]?.id ?? uid('transaction'),
+        baseGraphVersion: approvedGraphVersionRef.current,
+        operations: buildGraphOperations(approved, snapshotToPersist),
+      };
+      const response = await applyProjectGraphOperations(workspaceIdRef.current, projectIdRef.current, payload);
+      if (response.status === 'accepted') {
+        applyServerProjectGraph(
+          response.workspaceId,
+          response.projectId,
+          response.project as PlannerSnapshot,
+          response.graphVersion,
+        );
+        setInteractiveDrafts((current) => {
+          const nextDrafts: InteractiveDraftMap = {};
+          const approvedResponseSnapshot = sanitizeSnapshot(response.project as PlannerSnapshot);
+          for (const [key, draft] of Object.entries(current)) {
+            if (draft.targetType === 'root') {
+              nextDrafts[key] = {
+                ...draft,
+                dirty: false,
+                needsRevalidation: false,
+                removedByRollback: false,
+              };
+              continue;
+            }
+            if (!approvedResponseSnapshot.nodes.some((node) => node.id === draft.targetId)) {
+              continue;
+            }
+            nextDrafts[key] = {
+              ...draft,
+              dirty: false,
+              needsRevalidation: false,
+              removedByRollback: false,
+            };
+          }
+          return nextDrafts;
+        });
+        setPendingTransactions([]);
+        return;
+      }
+
+      const serverSnapshot = sanitizeSnapshot(response.project as PlannerSnapshot);
+      approvedSnapshotRef.current = serverSnapshot;
+      snapshotRef.current = serverSnapshot;
+      approvedGraphVersionRef.current = response.graphVersion;
+      pendingTransactionsRef.current = [];
+      setApprovedSnapshot(serverSnapshot);
+      setApprovedGraphVersion(response.graphVersion);
+      setSnapshot(serverSnapshot);
+      setPendingTransactions([]);
+      setInteractiveDrafts((current) => {
+        const nextDrafts: InteractiveDraftMap = {};
+        for (const [key, draft] of Object.entries(current)) {
+          if (draft.targetType === 'root') {
+            nextDrafts[key] = { ...draft, needsRevalidation: true };
+            continue;
+          }
+          const exists = serverSnapshot.nodes.some((node) => node.id === draft.targetId);
+          if (exists) {
+            nextDrafts[key] = { ...draft, needsRevalidation: true };
+          } else {
+            nextDrafts[key] = { ...draft, removedByRollback: true, needsRevalidation: false, dirty: false };
+          }
+        }
+        return nextDrafts;
+      });
+      setGraphSyncError(response.message);
+      showNotification(response.message, 'error');
     },
-    [applyServerProjectGraph],
+    [applyServerProjectGraph, setApprovedSnapshot, showNotification],
   );
 
+  const runProjectGraphSync = useCallback(() => {
+    if (syncPromiseRef.current) {
+      return syncPromiseRef.current;
+    }
+    const pending = persistSnapshotToServer(
+      overlayInteractiveDrafts(snapshotRef.current, interactiveDraftsRef.current),
+    ).finally(() => {
+      syncPromiseRef.current = null;
+    });
+    syncPromiseRef.current = pending;
+    return pending;
+  }, [persistSnapshotToServer]);
+
   const flushProjectGraphSync = useCallback(async () => {
-    const nextSerialized = serializeSnapshot(snapshotRef.current);
-    if (!workspaceIdRef.current || !projectIdRef.current || !hasHydratedProjectRef.current || nextSerialized === lastSyncedSnapshotRef.current) {
+    const drafts = interactiveDraftsRef.current;
+    if (Object.keys(drafts).length > 0) {
+      let nextSnapshot = snapshotRef.current;
+      for (const draft of Object.values(drafts)) {
+        if (draft.removedByRollback) {
+          continue;
+        }
+        if (draft.targetType === 'root') {
+          nextSnapshot = {
+            ...nextSnapshot,
+            root: {
+              ...nextSnapshot.root,
+              ...draft.fields,
+            },
+          };
+          continue;
+        }
+        nextSnapshot = {
+          ...nextSnapshot,
+          nodes: nextSnapshot.nodes.map((node) =>
+            node.id === draft.targetId
+              ? {
+                  ...node,
+                  ...draft.fields,
+                }
+              : node,
+          ),
+        };
+      }
+      const normalizedSnapshot = sanitizeSnapshot(nextSnapshot);
+      snapshotRef.current = normalizedSnapshot;
+      setSnapshot(normalizedSnapshot);
+      interactiveDraftsRef.current = {};
+      setInteractiveDrafts({});
+    }
+    if (
+      !workspaceIdRef.current ||
+      !projectIdRef.current ||
+      !hasHydratedProjectRef.current ||
+      !hasSnapshotChanges(approvedSnapshotRef.current, snapshotRef.current)
+    ) {
       return;
     }
-
-    const hasPendingDebouncedSync = syncTimerRef.current !== null;
     if (syncTimerRef.current !== null) {
       window.clearTimeout(syncTimerRef.current);
       syncTimerRef.current = null;
     }
-
-    if (hasPendingDebouncedSync || !syncPromiseRef.current) {
-      const pending = persistSnapshotToServer(snapshotRef.current)
-        .catch((error) => {
-          setGraphSyncError(error instanceof Error ? error.message : 'Could not persist the workflow.');
-        })
-        .finally(() => {
-          syncPromiseRef.current = null;
-          syncResolveRef.current?.();
-          syncResolveRef.current = null;
-        });
-      syncPromiseRef.current = pending;
-    }
-
-    if (syncPromiseRef.current) {
-      await syncPromiseRef.current;
-    }
-  }, [persistSnapshotToServer]);
+    await runProjectGraphSync();
+  }, [runProjectGraphSync]);
 
   const initializeProjectGraph = useCallback(async () => {
     setIsProjectGraphLoading(true);
@@ -567,14 +769,25 @@ function PlannerApp() {
 
       if (selectedProject) {
         const response = await fetchProjectGraph(selectedWorkspace.workspaceId, selectedProject.projectId);
-        applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+        applyServerProjectGraph(
+          response.workspaceId,
+          response.projectId,
+          response.project as PlannerSnapshot,
+          response.graphVersion,
+        );
       } else {
         const emptySnapshot = blankSnapshot();
         isApplyingServerSnapshotRef.current = true;
-        lastSyncedSnapshotRef.current = serializeSnapshot(emptySnapshot);
+        approvedSnapshotRef.current = emptySnapshot;
+        snapshotRef.current = emptySnapshot;
+        approvedGraphVersionRef.current = 0;
+        pendingTransactionsRef.current = [];
         setWorkspaceId(selectedWorkspace.workspaceId);
         setProjectId('');
+        setApprovedSnapshot(emptySnapshot);
         setSnapshot(emptySnapshot);
+        setApprovedGraphVersion(0);
+        setPendingTransactions([]);
       }
     } catch (error) {
       setBackendStatus('offline');
@@ -590,6 +803,19 @@ function PlannerApp() {
   }, [initializeProjectGraph]);
 
   useEffect(() => {
+    if (!workspaceId || !projectId) {
+      setPendingRecoveryBundle(null);
+      return;
+    }
+    const bundle = readRecoveryBundle();
+    if (bundle && bundle.workspaceId === workspaceId && bundle.projectId === projectId && bundle.savedAt) {
+      setPendingRecoveryBundle(bundle);
+      return;
+    }
+    setPendingRecoveryBundle(null);
+  }, [projectId, workspaceId]);
+
+  useEffect(() => {
     if (!hasHydratedProjectRef.current) {
       return;
     }
@@ -598,36 +824,18 @@ function PlannerApp() {
       return;
     }
 
-    if (isInspectorEditingRef.current) {
-      return;
-    }
-
     if (syncTimerRef.current !== null) {
       window.clearTimeout(syncTimerRef.current);
-    } else {
-      syncPromiseRef.current = new Promise<void>((resolve) => {
-        syncResolveRef.current = resolve;
-      });
     }
 
     syncTimerRef.current = window.setTimeout(() => {
       syncTimerRef.current = null;
-      if (serializeSnapshot(snapshot) === lastSyncedSnapshotRef.current) {
-        syncPromiseRef.current = null;
-        syncResolveRef.current?.();
-        syncResolveRef.current = null;
+      const predictedSnapshot = overlayInteractiveDrafts(snapshotRef.current, interactiveDraftsRef.current);
+      if (!hasSnapshotChanges(approvedSnapshotRef.current, predictedSnapshot)) {
         return;
       }
-      void persistSnapshotToServer(snapshot)
-        .catch((error) => {
-          setGraphSyncError(error instanceof Error ? error.message : 'Could not persist the workflow.');
-        })
-        .finally(() => {
-          syncPromiseRef.current = null;
-          syncResolveRef.current?.();
-          syncResolveRef.current = null;
-        });
-    }, 300);
+      void runProjectGraphSync();
+    }, 4000);
 
     return () => {
       if (syncTimerRef.current !== null) {
@@ -635,20 +843,64 @@ function PlannerApp() {
         syncTimerRef.current = null;
       }
     };
-  }, [snapshot, persistSnapshotToServer]);
+  }, [interactiveDrafts, snapshot, runProjectGraphSync]);
 
-  const handleInspectorFieldFocus = useCallback(() => {
-    isInspectorEditingRef.current = true;
-    if (syncTimerRef.current !== null) {
-      window.clearTimeout(syncTimerRef.current);
-      syncTimerRef.current = null;
+  useEffect(() => {
+    if (!workspaceId || !projectId || !hasPendingApprovals) {
+      writeRecoveryBundle(null);
+      return;
     }
-  }, []);
+    writeRecoveryBundle({
+      workspaceId,
+      projectId,
+      approvedSnapshot,
+      approvedGraphVersion,
+      predictedSnapshot: snapshot,
+      pendingTransactions,
+      interactiveDrafts,
+      savedAt: new Date().toISOString(),
+    });
+  }, [approvedGraphVersion, approvedSnapshot, hasPendingApprovals, interactiveDrafts, pendingTransactions, projectId, snapshot, workspaceId]);
 
-  const handleInspectorFieldBlur = useCallback(() => {
-    isInspectorEditingRef.current = false;
-    void flushProjectGraphSync();
-  }, [flushProjectGraphSync]);
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!hasPendingApprovals) {
+        return;
+      }
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasPendingApprovals]);
+
+  const restorePendingRecovery = useCallback(() => {
+    if (!pendingRecoveryBundle) {
+      return;
+    }
+    const approved = sanitizeSnapshot(pendingRecoveryBundle.approvedSnapshot);
+    const predicted = sanitizeSnapshot(pendingRecoveryBundle.predictedSnapshot);
+    approvedSnapshotRef.current = approved;
+    snapshotRef.current = predicted;
+    approvedGraphVersionRef.current = pendingRecoveryBundle.approvedGraphVersion;
+    pendingTransactionsRef.current = pendingRecoveryBundle.pendingTransactions;
+    setApprovedSnapshot(approved);
+    setSnapshot(predicted);
+    setApprovedGraphVersion(pendingRecoveryBundle.approvedGraphVersion);
+    setPendingTransactions(pendingRecoveryBundle.pendingTransactions);
+    setInteractiveDrafts(pendingRecoveryBundle.interactiveDrafts);
+    setPendingRecoveryBundle(null);
+    showNotification('Restored pending local changes.');
+  }, [pendingRecoveryBundle, setApprovedSnapshot, showNotification]);
+
+  const discardPendingRecovery = useCallback(() => {
+    writeRecoveryBundle(null);
+    setPendingRecoveryBundle(null);
+    pendingTransactionsRef.current = [];
+    interactiveDraftsRef.current = {};
+    setInteractiveDrafts({});
+    setPendingTransactions([]);
+  }, []);
 
   useEffect(() => {
     if (selectedNodeId && !scopeNodes.some((node) => node.id === selectedNodeId)) {
@@ -740,7 +992,7 @@ function PlannerApp() {
     [scopeEdges, selectedEdgeId, insertionEdgeId, dragDropTarget, dragPreviewNodeId, canvasNodes],
   );
 
-  const selectedNode = snapshot.nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const selectedNode = displaySnapshot.nodes.find((node) => node.id === selectedNodeId) ?? null;
   const selectedCanvasNodes = useMemo(() => canvasNodes.filter((node) => node.selected), [canvasNodes]);
   const multiSelectedCanvasNodes = useMemo(() => selectedCanvasNodes.filter((node) => scopeNodes.some((scopeNode) => scopeNode.id === node.id)), [selectedCanvasNodes, scopeNodes]);
   const multiSelectedNodeIds = useMemo(() => multiSelectedCanvasNodes.map((node) => node.id), [multiSelectedCanvasNodes]);
@@ -790,11 +1042,17 @@ function PlannerApp() {
     },
     [multiSelectionBounds],
   );
-  const activeScopeNode = activeScopeId ? snapshot.nodes.find((node) => node.id === activeScopeId) ?? null : null;
+  const activeScopeNode = activeScopeId ? displaySnapshot.nodes.find((node) => node.id === activeScopeId) ?? null : null;
   const panelItem = selectedNode ?? activeScopeNode ?? null;
   const panelMode: 'selected' | 'scope-group' | 'root' =
     selectedNode ? 'selected' : activeScopeNode ? 'scope-group' : 'root';
   const tagTargetNode = panelMode === 'root' ? null : panelItem;
+  const panelDraft =
+    panelMode === 'root'
+      ? interactiveDrafts[getDraftTargetKey('root', 'root')] ?? null
+      : panelItem
+        ? interactiveDrafts[getDraftTargetKey('node', panelItem.id)] ?? null
+        : null;
 
   useEffect(() => {
     setNodeTagModalQuery('');
@@ -855,12 +1113,69 @@ function PlannerApp() {
       : null;
   }, [projectId, taskScope.mode, workspaceId, workspaces]);
 
+  const localProjectAvailableTasks = useMemo(() => {
+    if (!workspaceId || !projectId) {
+      return [];
+    }
+    const activeWorkspace = workspaces.find((workspace) => workspace.workspaceId === workspaceId);
+    if (!activeWorkspace) {
+      return [];
+    }
+
+    return sortAvailableTasks(
+      displaySnapshot.nodes
+        .filter((node) => node.kind === 'task' && plannerGraph.isNodeAvailable(node.id))
+        .map((node) => ({
+          workspaceId: activeWorkspace.workspaceId,
+          workspaceName: activeWorkspace.name,
+          projectId,
+          projectTitle: displaySnapshot.root.title,
+          taskId: node.id,
+          title: node.title,
+        })),
+    );
+  }, [displaySnapshot.nodes, displaySnapshot.root.title, plannerGraph, projectId, workspaceId, workspaces]);
+
+  const availableTasks = useMemo(() => {
+    if (!resolvedTaskScope) {
+      return [];
+    }
+
+    if (resolvedTaskScope.mode === 'project') {
+      return localProjectAvailableTasks;
+    }
+
+    const currentProjectIsInScope =
+      workspaceId &&
+      projectId &&
+      (resolvedTaskScope.mode === 'all' ||
+        (resolvedTaskScope.mode === 'workspace' && resolvedTaskScope.workspaceId === workspaceId));
+
+    if (!currentProjectIsInScope) {
+      return remoteAvailableTasks;
+    }
+
+    return sortAvailableTasks(
+      remoteAvailableTasks
+        .filter((task) => !(task.workspaceId === workspaceId && task.projectId === projectId))
+        .concat(localProjectAvailableTasks),
+    );
+  }, [localProjectAvailableTasks, projectId, remoteAvailableTasks, resolvedTaskScope, workspaceId]);
+
   useEffect(() => {
     const requestId = availableTasksRequestRef.current + 1;
     availableTasksRequestRef.current = requestId;
     if (!resolvedTaskScope) {
-      setAvailableTasks([]);
+      setRemoteAvailableTasks([]);
       setAvailableTasksError(null);
+      setIsAvailableTasksLoading(false);
+      return;
+    }
+
+    if (resolvedTaskScope.mode === 'project') {
+      setRemoteAvailableTasks([]);
+      setAvailableTasksError(null);
+      setIsAvailableTasksLoading(false);
       return;
     }
 
@@ -868,17 +1183,150 @@ function PlannerApp() {
     setAvailableTasksError(null);
     void fetchAvailableTasks(resolvedTaskScope)
       .then((tasks) => {
-        if (availableTasksRequestRef.current === requestId) setAvailableTasks(tasks);
+        if (availableTasksRequestRef.current === requestId) setRemoteAvailableTasks(tasks);
       })
       .catch((error) => {
         if (availableTasksRequestRef.current !== requestId) return;
-        setAvailableTasks([]);
+        setRemoteAvailableTasks([]);
         setAvailableTasksError(error instanceof Error ? error.message : 'Could not load available tasks.');
       })
       .finally(() => {
         if (availableTasksRequestRef.current === requestId) setIsAvailableTasksLoading(false);
       });
   }, [availableTasksRefreshKey, resolvedTaskScope]);
+
+  const applyPredictedSnapshotChange = useCallback(
+    (label: string, updater: (current: PlannerSnapshot) => PlannerSnapshot) => {
+      const currentSnapshot = snapshotRef.current;
+      const nextSnapshot = sanitizeSnapshot(updater(currentSnapshot));
+      if (serializeSnapshot(currentSnapshot) === serializeSnapshot(nextSnapshot)) {
+        return currentSnapshot;
+      }
+      const operations = buildGraphOperations(currentSnapshot, nextSnapshot);
+      const transaction: GraphTransaction = {
+        id: uid('transaction'),
+        workspaceId: workspaceIdRef.current,
+        projectId: projectIdRef.current,
+        baseGraphVersion: approvedGraphVersionRef.current + pendingTransactionsRef.current.length,
+        operations,
+        createdAt: new Date().toISOString(),
+        label,
+      };
+      snapshotRef.current = nextSnapshot;
+      pendingTransactionsRef.current = [...pendingTransactionsRef.current, transaction];
+      setSnapshot(nextSnapshot);
+      setPendingTransactions((current) => [...current, transaction]);
+      return nextSnapshot;
+    },
+    [],
+  );
+
+  const setDraftFieldValue = useCallback(
+    (
+      target: InteractiveDraft['targetType'],
+      targetId: string,
+      field: InteractiveDraft['activeField'],
+      value: string | null,
+    ) => {
+      if (!field) {
+        return;
+      }
+      const key = getDraftTargetKey(target, targetId);
+      setInteractiveDrafts((current) => {
+        const draft = current[key] ?? createInteractiveDraft(target, targetId, field);
+        return {
+          ...current,
+          [key]: {
+            ...draft,
+            activeField: draft.activeField ?? field,
+            dirty: true,
+            removedByRollback: false,
+            fields: {
+              ...draft.fields,
+              [field]: value,
+            },
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  const beginInteractiveDraft = useCallback((target: InteractiveDraft['targetType'], targetId: string, field: InteractiveDraft['activeField']) => {
+    const key = getDraftTargetKey(target, targetId);
+    activeDraftKeyRef.current = key;
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+    setInteractiveDrafts((current) => ({
+      ...current,
+      [key]: {
+        ...(current[key] ?? createInteractiveDraft(target, targetId, field)),
+        activeField: field,
+        removedByRollback: false,
+      },
+    }));
+  }, []);
+
+  const commitInteractiveDraft = useCallback(
+    (target: InteractiveDraft['targetType'], targetId: string) => {
+      const key = getDraftTargetKey(target, targetId);
+      const draft = interactiveDraftsRef.current[key];
+      if (!draft) {
+        return;
+      }
+
+      setInteractiveDrafts((current) => ({
+        ...current,
+        [key]: {
+          ...draft,
+          activeField: null,
+        },
+      }));
+      activeDraftKeyRef.current = null;
+
+      if (draft.removedByRollback) {
+        return;
+      }
+
+      const currentSnapshot = snapshotRef.current;
+      if (target === 'root') {
+        const nextRoot = { ...currentSnapshot.root, ...draft.fields };
+        if (JSON.stringify(nextRoot) !== JSON.stringify(currentSnapshot.root)) {
+          applyPredictedSnapshotChange('Update project details', (current) => ({ ...current, root: nextRoot }));
+        }
+      } else {
+        const node = currentSnapshot.nodes.find((entry) => entry.id === targetId);
+        if (!node) {
+          setInteractiveDrafts((current) => ({
+            ...current,
+            [key]: {
+              ...draft,
+              removedByRollback: true,
+              dirty: false,
+              activeField: null,
+            },
+          }));
+          return;
+        }
+        const nextNode = { ...node, ...draft.fields };
+        if (JSON.stringify(nextNode) !== JSON.stringify(node)) {
+          applyPredictedSnapshotChange(`Update ${node.title || 'item'}`, (current) => ({
+            ...current,
+            nodes: current.nodes.map((entry) => (entry.id === targetId ? nextNode : entry)),
+          }));
+        }
+      }
+
+      setInteractiveDrafts((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    },
+    [applyPredictedSnapshotChange],
+  );
 
   const groupSelectedItems = useCallback(
     (nodeIds: string[]) => {
@@ -903,7 +1351,7 @@ function PlannerApp() {
         y: Math.min(...selectedNodes.map((node) => node.position.y)) - 16,
       };
 
-      setSnapshot((current) => {
+      applyPredictedSnapshotChange('Group selected items', (current) => {
         const unaffectedEdges = current.edges.filter((edge) => !selectedSet.has(edge.source) && !selectedSet.has(edge.target));
         const internalEdges = current.edges.filter((edge) => selectedSet.has(edge.source) && selectedSet.has(edge.target));
         const incomingSources = [...new Set(current.edges.filter((edge) => !selectedSet.has(edge.source) && selectedSet.has(edge.target)).map((edge) => edge.source))];
@@ -967,7 +1415,7 @@ function PlannerApp() {
       setToolbarNodeId(null);
       setSelectedEdgeId(null);
     },
-    [appendSessionJournal, snapshot],
+    [appendSessionJournal, applyPredictedSnapshotChange, snapshot],
   );
 
   const normalizedSearchQuery = searchQuery.trim();
@@ -980,7 +1428,7 @@ function PlannerApp() {
       return [];
     }
 
-    return snapshot.nodes.filter((node) => {
+    return displaySnapshot.nodes.filter((node) => {
       if (isTagSearch) {
         if (!normalizedTagSearch) {
           return false;
@@ -992,7 +1440,7 @@ function PlannerApp() {
         value.toLowerCase().includes(normalizedTextSearch),
       );
     });
-  }, [snapshot.nodes, normalizedSearchQuery, isTagSearch, normalizedTagSearch, normalizedTextSearch]);
+  }, [displaySnapshot.nodes, normalizedSearchQuery, isTagSearch, normalizedTagSearch, normalizedTextSearch]);
 
   const openGroupTab = useCallback((groupId: string) => {
     setOpenTabs((current) => {
@@ -1115,7 +1563,7 @@ function PlannerApp() {
 
   const deleteSelectedEdge = useCallback((edgeId: string) => {
     const edge = snapshot.edges.find((entry) => entry.id === edgeId);
-    setSnapshot((current) => ({
+    applyPredictedSnapshotChange('Delete dependency', (current) => ({
       ...current,
       edges: current.edges.filter((edge) => edge.id !== edgeId),
     }));
@@ -1131,7 +1579,7 @@ function PlannerApp() {
     }
     setSelectedEdgeId((current) => (current === edgeId ? null : current));
     setInsertionEdgeId((current) => (current === edgeId ? null : current));
-  }, [activeScopeId, appendSessionJournal, snapshot.edges, snapshot.nodes, snapshot]);
+  }, [activeScopeId, appendSessionJournal, applyPredictedSnapshotChange, snapshot.edges, snapshot.nodes, snapshot]);
 
   const deleteItems = useCallback(
     (nodeIds: string[]) => {
@@ -1145,7 +1593,7 @@ function PlannerApp() {
 
       const removedNodes = snapshot.nodes.filter((node) => deleteSet.has(node.id));
 
-      setSnapshot((current) => ({
+      applyPredictedSnapshotChange('Delete items', (current) => ({
         root: current.root,
         nodes: current.nodes.filter((node) => !deleteSet.has(node.id)),
         edges: current.edges.filter((edge) => !deleteSet.has(edge.source) && !deleteSet.has(edge.target)),
@@ -1168,84 +1616,39 @@ function PlannerApp() {
       setSelectedNodeIds((current) => current.filter((nodeId) => !deleteSet.has(nodeId)));
       setToolbarNodeId((current) => (current && deleteSet.has(current) ? null : current));
     },
-    [appendSessionJournal, snapshot],
+    [appendSessionJournal, applyPredictedSnapshotChange, snapshot],
   );
 
   const setNodeTitle = useCallback((nodeId: string, title: string) => {
-    const node = snapshot.nodes.find((entry) => entry.id === nodeId);
-    setSnapshot((current) => ({
-      ...current,
-      nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, title } : node)),
-    }));
-    if (node && node.title !== title) {
-      const finalNode = { ...node, title };
-      appendSessionJournal({
-        type: 'update_node',
-        entityKey: `node:${node.id}`,
-        initialNodeState: nodeJournalStateFromNode(node, formatScopeTitle(snapshot, node.parentId)),
-        finalNodeState: nodeJournalStateFromNode(finalNode, formatScopeTitle(snapshot, node.parentId)),
-        nodeAction: 'updated',
-        title: `Renamed ${node.kind} to ${title || 'Untitled'}`,
-        detail: `Previous title: ${node.title}`,
-        scopeTitle: formatScopeTitle(snapshot, node.parentId),
-      });
-    }
-  }, [appendSessionJournal, snapshot]);
+    setDraftFieldValue('node', nodeId, 'title', title);
+  }, [setDraftFieldValue]);
 
   const setNodeField = useCallback(
     (nodeId: string, field: EditableNodeField, value: string) => {
-      const node = snapshot.nodes.find((entry) => entry.id === nodeId);
-      setSnapshot((current) => ({
-        ...current,
-        nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, [field]: value } : node)),
-      }));
-      if (node && node[field] !== value) {
-        const finalNode = { ...node, [field]: value };
-        appendSessionJournal({
-          type: 'update_node',
-          entityKey: `node:${node.id}`,
-          initialNodeState: nodeJournalStateFromNode(node, formatScopeTitle(snapshot, node.parentId)),
-          finalNodeState: nodeJournalStateFromNode(finalNode, formatScopeTitle(snapshot, node.parentId)),
-          nodeAction: 'updated',
-          title: `Updated ${field === 'description' ? 'description' : 'completion criteria'} for ${node.title}`,
-          detail: value.trim() ? value.trim().slice(0, 180) : 'Cleared field.',
-          scopeTitle: formatScopeTitle(snapshot, node.parentId),
-        });
-      }
+      setDraftFieldValue('node', nodeId, field, value);
     },
-    [appendSessionJournal, snapshot],
+    [setDraftFieldValue],
   );
 
   const setRootField = useCallback(
     (field: EditableRootField, value: string) => {
-      const previous = snapshot.root[field];
-      setSnapshot((current) => ({
-        ...current,
-        root: {
-          ...current.root,
-          [field]: value,
-        },
-      }));
-      if (previous !== value) {
-        appendSessionJournal({
-          type: 'update_root',
-          title: `Updated project ${field === 'completionCriteria' ? 'completion criteria' : field}`,
-          detail: value.trim() ? value.trim().slice(0, 180) : 'Cleared field.',
-          scopeTitle: snapshot.root.title,
-        });
-      }
+      setDraftFieldValue('root', 'root', field, value);
     },
-    [appendSessionJournal, snapshot.root],
+    [setDraftFieldValue],
   );
 
   const setNodeTags = useCallback((nodeId: string, updater: (currentTags: string[]) => string[]) => {
-    setSnapshot((current) => ({
+    applyPredictedSnapshotChange('Update node tags', (current) => ({
       ...current,
       nodes: current.nodes.map((node) =>
         node.id === nodeId ? { ...node, tags: updater(node.tags).map(normalizeTag).filter(Boolean) } : node,
       ),
     }));
-  }, []);
+  }, [applyPredictedSnapshotChange]);
+
+  const setNodeDate = useCallback((nodeId: string, field: EditableNodeDateField, value: string) => {
+    setDraftFieldValue('node', nodeId, field, normalizeDateOnly(value));
+  }, [setDraftFieldValue]);
 
   const persistWorkspaceTags = useCallback(
     async (nextTags: string[]) => {
@@ -1270,7 +1673,7 @@ function PlannerApp() {
 
   const setTaskStatus = useCallback((nodeId: string, status: TaskStatus) => {
     const node = snapshot.nodes.find((entry) => entry.id === nodeId);
-    setSnapshot((current) => ({
+    applyPredictedSnapshotChange(`Set task status ${status}`, (current) => ({
       ...current,
       nodes: current.nodes.map((node) => (node.id === nodeId && node.kind === 'task' ? { ...node, status } : node)),
     }));
@@ -1288,7 +1691,7 @@ function PlannerApp() {
         completed: status === 'done',
       });
     }
-  }, [appendSessionJournal, snapshot]);
+  }, [appendSessionJournal, applyPredictedSnapshotChange, snapshot]);
 
   const toggleTaskStatus = useCallback(
     (nodeId: string) => {
@@ -1306,7 +1709,7 @@ function PlannerApp() {
       if (!projectId) return;
       const newNodeId = uid('task');
       let newNodeTitle = '';
-      setSnapshot((current) => {
+      applyPredictedSnapshotChange('Add task', (current) => {
         const scopedNodes = current.nodes.filter((node) => getNodeScope(node) === activeScopeId);
         const nextIndex = scopedNodes.length;
         const newNode: PlannerNodeRecord = {
@@ -1377,7 +1780,7 @@ function PlannerApp() {
       if (snapshot.edges.some((edge) => edge.source === source && edge.target === target)) {
         return;
       }
-      setSnapshot((current) => ({
+      applyPredictedSnapshotChange('Add dependency', (current) => ({
         ...current,
         edges: [...current.edges, { id: uid('edge'), source, target }],
       }));
@@ -1389,7 +1792,7 @@ function PlannerApp() {
         scopeTitle: formatScopeTitle(snapshot, activeScopeId),
       });
     },
-    [activeScopeId, appendSessionJournal, snapshot],
+    [activeScopeId, appendSessionJournal, applyPredictedSnapshotChange, snapshot],
   );
 
   const handleConnect = useCallback(
@@ -1404,7 +1807,7 @@ function PlannerApp() {
 
   const splitTask = useCallback((nodeId: string) => {
     const node = snapshot.nodes.find((entry) => entry.id === nodeId);
-    setSnapshot((current) => {
+    applyPredictedSnapshotChange('Split task', (current) => {
       const node = current.nodes.find((entry) => entry.id === nodeId);
       if (!node || node.kind !== 'task') {
         return current;
@@ -1453,7 +1856,7 @@ function PlannerApp() {
       });
     }
     setSelectedNodeId(nodeId);
-  }, [appendSessionJournal, snapshot]);
+  }, [appendSessionJournal, applyPredictedSnapshotChange, snapshot]);
 
   const moveNodeIntoGroup = useCallback(
     (draggedNodeId: string, targetGroupId: string, draggedPosition: { x: number; y: number }) => {
@@ -1468,7 +1871,7 @@ function PlannerApp() {
         return;
       }
 
-      setSnapshot((current) => ({
+      applyPredictedSnapshotChange('Move node into group', (current) => ({
         ...current,
         nodes: current.nodes.map((node) =>
           node.id === draggedNodeId
@@ -1504,7 +1907,7 @@ function PlannerApp() {
       setToolbarNodeId(null);
       setSelectedEdgeId(null);
     },
-    [appendSessionJournal, snapshot],
+    [appendSessionJournal, applyPredictedSnapshotChange, snapshot],
   );
 
   const combineNodesIntoGroup = useCallback(
@@ -1542,7 +1945,7 @@ function PlannerApp() {
         size: { ...groupSize },
       };
 
-      setSnapshot((current) => ({
+      applyPredictedSnapshotChange('Combine nodes into group', (current) => ({
         ...current,
         nodes: [
           ...current.nodes.map((node) => {
@@ -1578,7 +1981,7 @@ function PlannerApp() {
       setToolbarNodeId(null);
       setSelectedEdgeId(null);
     },
-    [appendSessionJournal, snapshot],
+    [appendSessionJournal, applyPredictedSnapshotChange, snapshot],
   );
 
   const resetProjectUi = useCallback(() => {
@@ -1591,24 +1994,23 @@ function PlannerApp() {
     setSelectedEdgeId(null);
   }, []);
 
-  const setNodeDate = useCallback((nodeId: string, field: EditableNodeDateField, value: string) => {
-    setSnapshot((current) => ({
-      ...current,
-      nodes: current.nodes.map((node) =>
-        node.id === nodeId ? { ...node, [field]: normalizeDateOnly(value) } : node,
-      ),
-    }));
-  }, []);
-
   const showEmptyWorkspace = useCallback((nextWorkspaceId: string) => {
     const emptySnapshot = blankSnapshot();
     isApplyingServerSnapshotRef.current = true;
-    lastSyncedSnapshotRef.current = serializeSnapshot(emptySnapshot);
+    approvedSnapshotRef.current = emptySnapshot;
+    snapshotRef.current = emptySnapshot;
+    approvedGraphVersionRef.current = 0;
+    pendingTransactionsRef.current = [];
+    interactiveDraftsRef.current = {};
     setWorkspaceId(nextWorkspaceId);
     setProjectId('');
+    setApprovedSnapshot(emptySnapshot);
     setSnapshot(emptySnapshot);
+    setApprovedGraphVersion(0);
+    setPendingTransactions([]);
+    setInteractiveDrafts({});
     resetProjectUi();
-  }, [resetProjectUi]);
+  }, [resetProjectUi, setApprovedSnapshot]);
 
   const createNewProject = useCallback(async () => {
     if (!workspaceId) return;
@@ -1619,7 +2021,7 @@ function PlannerApp() {
       const project = blankSnapshot();
       project.root.title = title.trim() || 'Untitled Project';
       const response = await createProjectGraph(workspaceId, { project });
-      applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+      applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot, response.graphVersion);
       resetProjectUi();
       await loadWorkspaceTree();
       showNotification('Started a new blank project.');
@@ -1643,7 +2045,7 @@ function PlannerApp() {
         await flushProjectGraphSync();
         const response = await fetchProjectGraph(nextWorkspaceId, nextProjectId);
         const loadedSnapshot = sanitizeSnapshot(response.project as PlannerSnapshot);
-        applyServerProjectGraph(response.workspaceId, response.projectId, loadedSnapshot);
+        applyServerProjectGraph(response.workspaceId, response.projectId, loadedSnapshot, response.graphVersion);
         resetProjectUi();
         setIsWorkspaceMenuOpen(false);
         setIsProjectMenuOpen(false);
@@ -1683,24 +2085,41 @@ function PlannerApp() {
         if (task.workspaceId === workspaceIdRef.current && task.projectId === projectIdRef.current) {
           await flushProjectGraphSync();
         }
-        await completeAvailableTask(task.workspaceId, task.projectId, task.taskId);
-        setAvailableTasks((current) => current.filter((entry) => entry.taskId !== task.taskId || entry.projectId !== task.projectId));
+        const completionResponse = await completeAvailableTask(task.workspaceId, task.projectId, task.taskId);
+        setRemoteAvailableTasks((current) =>
+          current.filter((entry) => entry.taskId !== task.taskId || entry.projectId !== task.projectId),
+        );
 
         if (task.workspaceId === workspaceIdRef.current && task.projectId === projectIdRef.current) {
-          const response = await fetchProjectGraph(task.workspaceId, task.projectId);
-          applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+          const nextSnapshot = {
+            ...snapshotRef.current,
+            nodes: snapshotRef.current.nodes.map((node) =>
+              node.id === task.taskId && node.kind === 'task' ? { ...node, status: 'done' as const } : node,
+            ),
+          };
+          approvedSnapshotRef.current = nextSnapshot;
+          snapshotRef.current = nextSnapshot;
+          approvedGraphVersionRef.current = completionResponse.graphVersion;
+          pendingTransactionsRef.current = [];
+          setApprovedSnapshot(nextSnapshot);
+          setApprovedGraphVersion(completionResponse.graphVersion);
+          setSnapshot(nextSnapshot);
+          setPendingTransactions([]);
         }
-        await loadWorkspaceTree();
-        setAvailableTasksRefreshKey((current) => current + 1);
+        if (resolvedTaskScope?.mode !== 'project') {
+          setAvailableTasksRefreshKey((current) => current + 1);
+        }
         showNotification(`Completed ${task.title}.`);
       } catch (error) {
         showNotification(error instanceof Error ? error.message : 'Could not complete the task.', 'error');
-        setAvailableTasksRefreshKey((current) => current + 1);
+        if (resolvedTaskScope?.mode !== 'project') {
+          setAvailableTasksRefreshKey((current) => current + 1);
+        }
       } finally {
         setCompletingTaskKey(null);
       }
     },
-    [applyServerProjectGraph, flushProjectGraphSync, loadWorkspaceTree, showNotification],
+    [flushProjectGraphSync, resolvedTaskScope?.mode, setSnapshot, showNotification],
   );
 
   const selectWorkspace = useCallback(async (nextWorkspaceId: string) => {
@@ -1768,7 +2187,7 @@ function PlannerApp() {
       if (nextProjectId === projectId) await flushProjectGraphSync();
       const response = await updateProject(nextWorkspaceId, nextProjectId, { title: title.trim() });
       if (nextProjectId === projectId) {
-        applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+        applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot, response.graphVersion);
       }
       await loadWorkspaceTree();
     } catch (error) {
@@ -1867,7 +2286,7 @@ function PlannerApp() {
   const insertNodeIntoEdge = useCallback((edgeId: string, nodeId: string) => {
     const edge = snapshot.edges.find((entry) => entry.id === edgeId);
     const node = snapshot.nodes.find((entry) => entry.id === nodeId);
-    setSnapshot((current) => {
+    applyPredictedSnapshotChange('Insert node into dependency', (current) => {
       const edge = current.edges.find((entry) => entry.id === edgeId);
       const node = current.nodes.find((entry) => entry.id === nodeId);
       if (!edge || !node || edge.source === nodeId || edge.target === nodeId) {
@@ -1912,7 +2331,7 @@ function PlannerApp() {
 
     setSelectedEdgeId(null);
     setInsertionEdgeId(null);
-  }, [appendSessionJournal, snapshot]);
+  }, [appendSessionJournal, applyPredictedSnapshotChange, snapshot]);
 
   const panelTags = panelMode === 'root' ? snapshot.root.tags : panelItem?.tags ?? [];
   const knownTags = useMemo(() => normalizeTagList(workspaceTags), [workspaceTags]);
@@ -1992,15 +2411,15 @@ function PlannerApp() {
   }, [knownTags, normalizedNodeTagModalQuery, persistWorkspaceTags, setNodeTags, showNotification, tagTargetNode]);
 
   const saveProject = useCallback(() => {
-    const file = serializeProjectFile(projectId, snapshot, openTabs, activeTabId, selectedNodeId);
+    const file = serializeProjectFile(projectId, displaySnapshot, openTabs, activeTabId, selectedNodeId);
     const blob = new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = fileNameFromTitle(snapshot.root.title);
+    anchor.download = fileNameFromTitle(displaySnapshot.root.title);
     anchor.click();
     URL.revokeObjectURL(url);
-  }, [projectId, snapshot, openTabs, activeTabId, selectedNodeId]);
+  }, [projectId, displaySnapshot, openTabs, activeTabId, selectedNodeId]);
 
   const importProject = useCallback(() => fileInputRef.current?.click(), []);
 
@@ -2010,7 +2429,7 @@ function PlannerApp() {
       const normalized = sanitizeProjectFile(projectFile);
       await flushProjectGraphSync();
       const response = await createProjectGraph(workspaceId, { project: normalized.project });
-      applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot);
+      applyServerProjectGraph(response.workspaceId, response.projectId, response.project as PlannerSnapshot, response.graphVersion);
       setSessionJournal([]);
       setOpenTabs(normalized.ui.openTabs);
       setActiveTabId(normalized.ui.activeTabId);
@@ -2054,10 +2473,10 @@ function PlannerApp() {
 
   const breadcrumbs =
     activeTabId === 'main'
-      ? [{ id: 'main', label: snapshot.root.title }]
+      ? [{ id: 'main', label: displaySnapshot.root.title }]
       : [
-          { id: 'main', label: snapshot.root.title },
-          ...getGroupPath(snapshot.nodes, activeTabId).map((node) => ({
+          { id: 'main', label: displaySnapshot.root.title },
+          ...getGroupPath(displaySnapshot.nodes, activeTabId).map((node) => ({
             id: node.id,
             label: node.title,
           })),
@@ -2366,6 +2785,7 @@ function PlannerApp() {
                 </div>
                 <div className="canvas-status-region" aria-live="polite" aria-atomic="true">
                   {isProjectGraphLoading ? <p className="feedback floating-feedback">Loading workflow...</p> : null}
+                  {hasPendingApprovals && !isProjectGraphLoading ? <p className="feedback floating-feedback">Local changes pending backend approval.</p> : null}
                   {graphSyncError ? <p className="feedback feedback--error floating-feedback">{graphSyncError}</p> : null}
                   {notification ? (
                     <p
@@ -2491,7 +2911,7 @@ function PlannerApp() {
                     );
                     const finalPosition = positionsById.get(node.id) ?? node.position;
                     const finalDropTarget = resolveNodeDropTarget(node.id, finalPosition);
-                    setSnapshot((current) => ({
+                    applyPredictedSnapshotChange('Move node', (current) => ({
                       ...current,
                       nodes: current.nodes.map((entry) =>
                         positionsById.has(entry.id)
@@ -2566,7 +2986,7 @@ function PlannerApp() {
                   <div className="editor-inspector__header">
                     <div>
                       <span>Inspector</span>
-                      <strong>{panelMode === 'root' ? snapshot.root.title || 'Project' : panelItem?.title || 'No selection'}</strong>
+                      <strong>{panelMode === 'root' ? displaySnapshot.root.title || 'Project' : panelItem?.title || 'No selection'}</strong>
                     </div>
                     <button type="button" onClick={() => setIsRightDrawerOpen(false)} aria-label="Close inspector">
                       <X aria-hidden="true" />
@@ -2578,22 +2998,25 @@ function PlannerApp() {
                         <label className="glass-field">
                           Title
                           <input
-                            value={snapshot.root.title}
+                            value={displaySnapshot.root.title}
                             onChange={(event) => setRootField('title', event.target.value)}
-                            onFocus={handleInspectorFieldFocus}
-                            onBlur={handleInspectorFieldBlur}
+                            onFocus={() => beginInteractiveDraft('root', 'root', 'title')}
+                            onBlur={() => commitInteractiveDraft('root', 'root')}
                           />
                         </label>
                         <label className="glass-field glass-field--description">
                           Description
                           <textarea
                             className="glass-field__textarea"
-                            value={snapshot.root.description}
+                            value={displaySnapshot.root.description}
                             onChange={(event) => setRootField('description', event.target.value)}
-                            onFocus={handleInspectorFieldFocus}
-                            onBlur={handleInspectorFieldBlur}
+                            onFocus={() => beginInteractiveDraft('root', 'root', 'description')}
+                            onBlur={() => commitInteractiveDraft('root', 'root')}
                           />
                         </label>
+                        {panelDraft?.needsRevalidation ? (
+                          <p className="feedback">This draft is waiting to be revalidated against the latest server state.</p>
+                        ) : null}
                       </>
                     ) : panelItem ? (
                       <>
@@ -2603,8 +3026,8 @@ function PlannerApp() {
                             ref={titleInputRef}
                             value={panelItem.title}
                             onChange={(event) => setNodeTitle(panelItem.id, event.target.value)}
-                            onFocus={handleInspectorFieldFocus}
-                            onBlur={handleInspectorFieldBlur}
+                            onFocus={() => beginInteractiveDraft('node', panelItem.id, 'title')}
+                            onBlur={() => commitInteractiveDraft('node', panelItem.id)}
                           />
                         </label>
                         <label className="glass-field glass-field--description">
@@ -2613,8 +3036,8 @@ function PlannerApp() {
                             className="glass-field__textarea"
                             value={panelItem.description}
                             onChange={(event) => setNodeField(panelItem.id, 'description', event.target.value)}
-                            onFocus={handleInspectorFieldFocus}
-                            onBlur={handleInspectorFieldBlur}
+                            onFocus={() => beginInteractiveDraft('node', panelItem.id, 'description')}
+                            onBlur={() => commitInteractiveDraft('node', panelItem.id)}
                           />
                         </label>
                         <div className="node-date-grid">
@@ -2625,6 +3048,8 @@ function PlannerApp() {
                               value={panelItem.doDate ?? ''}
                               max={panelItem.dueDate ?? undefined}
                               onChange={(event) => setNodeDate(panelItem.id, 'doDate', event.target.value)}
+                              onFocus={() => beginInteractiveDraft('node', panelItem.id, 'doDate')}
+                              onBlur={() => commitInteractiveDraft('node', panelItem.id)}
                             />
                           </label>
                           <label className="glass-field">
@@ -2634,9 +3059,16 @@ function PlannerApp() {
                               value={panelItem.dueDate ?? ''}
                               min={panelItem.doDate ?? undefined}
                               onChange={(event) => setNodeDate(panelItem.id, 'dueDate', event.target.value)}
+                              onFocus={() => beginInteractiveDraft('node', panelItem.id, 'dueDate')}
+                              onBlur={() => commitInteractiveDraft('node', panelItem.id)}
                             />
                           </label>
                         </div>
+                        {panelDraft?.removedByRollback ? (
+                          <p className="feedback feedback--error">This item changed on the server and this draft can no longer be applied.</p>
+                        ) : panelDraft?.needsRevalidation ? (
+                          <p className="feedback">This draft is waiting to be revalidated against the latest server state.</p>
+                        ) : null}
                         <div className="node-created-field">
                           <span>Created</span>
                           <time dateTime={panelItem.createdAt}>{formatCreatedAt(panelItem.createdAt)}</time>
@@ -2748,6 +3180,27 @@ function PlannerApp() {
               ) : (
                 <p className="node-tag-editor__empty">No workspace tags yet.</p>
               )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {pendingRecoveryBundle ? (
+        <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="Restore pending changes">
+          <div className="settings-overlay__scrim" />
+          <div className="settings-overlay__panel">
+            <div className="panel settings-panel settings-panel--overlay">
+              <div className="panel-header">
+                <h2>Pending Changes Found</h2>
+              </div>
+              <p className="muted">
+                This project has local changes that were not yet approved by the backend. You can restore them and
+                continue, or discard them and keep the server-approved version.
+              </p>
+              <div className="sidebar-menu__actions">
+                <button type="button" onClick={restorePendingRecovery}>Restore pending work</button>
+                <button type="button" className="is-danger" onClick={discardPendingRecovery}>Discard pending work</button>
+              </div>
             </div>
           </div>
         </div>
