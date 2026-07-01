@@ -4,29 +4,47 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import delete
 
-from app.main import SessionLocal, WorkspaceModel, app
+from app.main import SessionLocal, WorkspaceModel, app, login_attempts
 
 
 @pytest.fixture(autouse=True)
 def clean_database():
+    login_attempts.clear()
     with SessionLocal() as session:
         session.execute(delete(WorkspaceModel))
         session.commit()
     yield
+    login_attempts.clear()
     with SessionLocal() as session:
         session.execute(delete(WorkspaceModel))
         session.commit()
 
 
+@pytest.fixture(autouse=True)
+def auth_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("APP_LOGIN_USERNAME", "planner-admin")
+    monkeypatch.setenv("APP_LOGIN_PASSWORD", "planner-password")
+    monkeypatch.setenv("APP_SESSION_SECRET", "planner-session-secret")
+    monkeypatch.setenv("APP_SESSION_MAX_AGE_SECONDS", "43200")
+    monkeypatch.setenv("APP_SESSION_SECURE", "false")
+
+
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    test_client = TestClient(app)
+    login(test_client)
+    return test_client
 
 
 def create_workspace(client: TestClient, name: str = "Engineering") -> dict:
+    login(client)
     response = client.post("/api/workspaces", json={"name": name, "description": "Delivery workspace"})
     assert response.status_code == 201
     return response.json()
+
+
+def login(client: TestClient, username: str = "planner-admin", password: str = "planner-password"):
+    return client.post("/api/auth/login", json={"username": username, "password": password})
 
 
 def test_listing_empty_database_recreates_default(client: TestClient):
@@ -38,13 +56,66 @@ def test_listing_empty_database_recreates_default(client: TestClient):
     assert listed.json()[0]["projects"] == []
 
 
+def test_login_sets_cookie_and_session_endpoint_works(client: TestClient):
+    response = login(client)
+    assert response.status_code == 200
+    assert "projectplanner_session=" in response.headers.get("set-cookie", "")
+
+    session = client.get("/api/auth/session")
+    assert session.status_code == 200
+    assert session.json() == {"authenticated": True, "username": "planner-admin"}
+
+
+def test_invalid_login_is_rejected(client: TestClient):
+    response = login(client, password="wrong-password")
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid username or password."
+
+
+def test_protected_api_requires_authentication(client: TestClient):
+    unauthenticated_client = TestClient(app)
+    response = unauthenticated_client.get("/api/workspaces")
+    assert response.status_code == 401
+
+
+def test_logout_clears_session_cookie(client: TestClient):
+    assert login(client).status_code == 200
+    logout_response = client.post("/api/auth/logout")
+    assert logout_response.status_code == 200
+    assert "projectplanner_session=" in logout_response.headers.get("set-cookie", "")
+    session = client.get("/api/auth/session")
+    assert session.status_code == 401
+
+
+def test_tampered_cookie_is_rejected(client: TestClient):
+    assert login(client).status_code == 200
+    client.cookies.set("projectplanner_session", "tampered.value")
+    response = client.get("/api/workspaces")
+    assert response.status_code == 401
+
+
+def test_failed_logins_trigger_temporary_throttling(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("APP_LOGIN_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("APP_LOGIN_WINDOW_SECONDS", "300")
+    monkeypatch.setenv("APP_LOGIN_LOCKOUT_SECONDS", "900")
+
+    for _ in range(3):
+        response = login(client, password="wrong-password")
+        assert response.status_code == 401
+
+    blocked = login(client, password="wrong-password")
+    assert blocked.status_code == 429
+
+
 def create_project(client: TestClient, workspace_id: str, title: str = "Launch") -> dict:
+    login(client)
     response = client.post(f"/api/workspaces/{workspace_id}/projects", json={"title": title})
     assert response.status_code == 201
     return response.json()
 
 
 def replace_graph(client: TestClient, workspace_id: str, project_id: str, graph: dict) -> dict:
+    login(client)
     project = client.get(f"/api/workspaces/{workspace_id}/projects/{project_id}/graph")
     assert project.status_code == 200
     graph_version = project.json()["graphVersion"]
@@ -88,6 +159,41 @@ def test_workspace_project_crud_and_nested_ownership(client: TestClient):
     )
     assert deleted.status_code == 200
     assert client.get(f"/api/workspaces/{workspace['workspaceId']}/projects").json() == []
+
+
+def test_workspaces_can_be_reordered(client: TestClient):
+    first = create_workspace(client, "First")
+    second = create_workspace(client, "Second")
+    third = create_workspace(client, "Third")
+
+    response = client.post(
+        "/api/workspaces/reorder",
+        json={"workspaceIds": [third["workspaceId"], first["workspaceId"], second["workspaceId"]]},
+    )
+    assert response.status_code == 200
+    assert [workspace["name"] for workspace in response.json()] == ["Third", "First", "Second"]
+
+    listed = client.get("/api/workspaces")
+    assert listed.status_code == 200
+    assert [workspace["name"] for workspace in listed.json()] == ["Third", "First", "Second"]
+
+
+def test_projects_can_be_reordered_within_a_workspace(client: TestClient):
+    workspace = create_workspace(client, "Workspace")
+    first = create_project(client, workspace["workspaceId"], "First")
+    second = create_project(client, workspace["workspaceId"], "Second")
+    third = create_project(client, workspace["workspaceId"], "Third")
+
+    response = client.post(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/reorder",
+        json={"projectIds": [third["projectId"], first["projectId"], second["projectId"]]},
+    )
+    assert response.status_code == 200
+    assert [project["title"] for project in response.json()] == ["Third", "First", "Second"]
+
+    listed = client.get(f"/api/workspaces/{workspace['workspaceId']}")
+    assert listed.status_code == 200
+    assert [project["title"] for project in listed.json()["projects"]] == ["Third", "First", "Second"]
 
 
 def test_graph_operations_remain_workspace_scoped(client: TestClient):

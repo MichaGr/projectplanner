@@ -46,6 +46,11 @@ export type CompleteTaskResponse = {
   graphVersion: number;
 };
 
+export type AuthSessionResponse = {
+  authenticated: boolean;
+  username: string | null;
+};
+
 export type GraphOperationRequest =
   | { type: 'replace_graph'; project: unknown }
   | { type: 'update_root'; root: unknown }
@@ -114,6 +119,9 @@ const ensureOk = async <T>(response: Response): Promise<T> => {
     } catch {
       // Keep the generic message when the response has no JSON detail.
     }
+    if (response.status === 401 && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+    }
     throw new ApiError(message, response.status);
   }
   return (await response.json()) as T;
@@ -168,6 +176,15 @@ export const deleteWorkspace = async (
   return ensureOk(response);
 };
 
+export const reorderWorkspaces = async (workspaceIds: string[]): Promise<WorkspaceSummary[]> => {
+  const response = await fetch('/api/workspaces/reorder', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspaceIds }),
+  });
+  return ensureOk<WorkspaceSummary[]>(response);
+};
+
 export const createProjectGraph = async (
   workspaceId: string,
   payload: { title?: string; project?: unknown },
@@ -206,6 +223,18 @@ export const deleteProject = async (
   return ensureOk(response);
 };
 
+export const reorderProjects = async (
+  workspaceId: string,
+  projectIds: string[],
+): Promise<StoredProjectSummary[]> => {
+  const response = await fetch(`${workspaceUrl(workspaceId)}/projects/reorder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectIds }),
+  });
+  return ensureOk<StoredProjectSummary[]>(response);
+};
+
 export const completeAvailableTask = async (
   workspaceId: string,
   projectId: string,
@@ -234,4 +263,17 @@ export const applyProjectGraphOperations = async (
 export const checkWorkflowService = async (): Promise<{ status: string }> => {
   const response = await fetchWithRetry('/api/health');
   return ensureOk<{ status: string }>(response);
+};
+
+export const fetchAuthSession = async (): Promise<AuthSessionResponse> => {
+  const response = await fetchWithRetry('/api/auth/session');
+  return ensureOk<AuthSessionResponse>(response);
+};
+
+export const logoutSession = async (): Promise<{ authenticated: boolean }> => {
+  const response = await fetch('/api/auth/logout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  return ensureOk<{ authenticated: boolean }>(response);
 };

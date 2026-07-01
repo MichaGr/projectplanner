@@ -33,10 +33,12 @@ const props = (overrides: Partial<ComponentProps<typeof WorkspaceProjectNavigati
   onCreateWorkspace: vi.fn(),
   onRenameWorkspace: vi.fn(),
   onRemoveWorkspace: vi.fn(),
+  onReorderWorkspaces: vi.fn(),
   onOpenProject: vi.fn(),
   onCreateProject: vi.fn(),
   onRenameProject: vi.fn(),
   onRemoveProject: vi.fn(),
+  onReorderProjects: vi.fn(),
   onImportProject: vi.fn(),
   onExportProject: vi.fn(),
   ...overrides,
@@ -54,5 +56,13 @@ describe('WorkspaceProjectNavigation', () => {
     render(<WorkspaceProjectNavigation {...props({ isProjectMenuOpen: true, onOpenProject })} />);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Second' }));
     expect(onOpenProject).toHaveBeenCalledWith('workspace-1', 'project-2');
+  });
+
+  it('reorders projects via drag handle drop', () => {
+    const onReorderProjects = vi.fn();
+    render(<WorkspaceProjectNavigation {...props({ isProjectMenuOpen: true, onReorderProjects })} />);
+    fireEvent.dragStart(screen.getByLabelText('Reorder project Default'));
+    fireEvent.drop(screen.getByText('Second').closest('.sidebar-menu__item-row')!);
+    expect(onReorderProjects).toHaveBeenCalledWith('workspace-1', ['project-2', 'project-1']);
   });
 });

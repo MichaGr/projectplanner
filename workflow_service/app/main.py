@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import os
+import base64
+import hashlib
+import hmac
+import json
+import time
 from datetime import date, datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, select
 from sqlalchemy.dialects.postgresql import JSONB
@@ -30,6 +36,7 @@ class WorkspaceModel(Base):
     name: Mapped[str] = mapped_column(Text, default="")
     description: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -57,6 +64,7 @@ class ProjectModel(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     completion_criteria: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
     graph_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
@@ -127,9 +135,173 @@ class EdgeModel(Base):
 engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, future=True, autoflush=False, autocommit=False)
 
+SESSION_COOKIE_NAME = "projectplanner_session"
+PUBLIC_API_PATHS = {
+    "/api/health",
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/session",
+}
+login_attempts: dict[str, dict[str, float | list[float]]] = {}
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def get_required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"{name} must be set.")
+    return value
+
+
+def get_auth_config() -> dict[str, str | int | bool]:
+    username = get_required_env("APP_LOGIN_USERNAME")
+    password = get_required_env("APP_LOGIN_PASSWORD")
+    session_secret = get_required_env("APP_SESSION_SECRET")
+    return {
+        "username": username,
+        "password": password,
+        "session_secret": session_secret,
+        "session_max_age_seconds": max(60, int(os.getenv("APP_SESSION_MAX_AGE_SECONDS", "43200"))),
+        "session_secure": os.getenv("APP_SESSION_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"},
+    }
+
+
+def validate_runtime_auth_config() -> None:
+    get_auth_config()
+
+
+def get_login_limits() -> dict[str, int]:
+    return {
+        "max_attempts": max(1, int(os.getenv("APP_LOGIN_MAX_ATTEMPTS", "5"))),
+        "window_seconds": max(1, int(os.getenv("APP_LOGIN_WINDOW_SECONDS", "300"))),
+        "lockout_seconds": max(1, int(os.getenv("APP_LOGIN_LOCKOUT_SECONDS", "900"))),
+    }
+
+
+def encode_session_cookie(username: str) -> str:
+    config = get_auth_config()
+    payload = {
+        "u": username,
+        "exp": int(time.time()) + int(config["session_max_age_seconds"]),
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload_token = base64.urlsafe_b64encode(payload_bytes).decode("ascii").rstrip("=")
+    signature = hmac.new(
+        str(config["session_secret"]).encode("utf-8"),
+        payload_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload_token}.{signature}"
+
+
+def decode_session_cookie(token: str | None) -> dict[str, str | int] | None:
+    if not token or "." not in token:
+        return None
+    payload_token, signature = token.rsplit(".", 1)
+    expected_signature = hmac.new(
+        str(get_auth_config()["session_secret"]).encode("utf-8"),
+        payload_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        return None
+
+    padding = "=" * (-len(payload_token) % 4)
+    try:
+        payload_bytes = base64.urlsafe_b64decode(f"{payload_token}{padding}")
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    username = payload.get("u")
+    expires_at = payload.get("exp")
+    if not isinstance(username, str) or not isinstance(expires_at, int):
+        return None
+    if expires_at <= int(time.time()):
+        return None
+    return {"username": username, "expires_at": expires_at}
+
+
+def get_client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        first_hop = forwarded_for.split(",")[0].strip()
+        if first_hop:
+            return first_hop
+    return request.client.host if request.client else "unknown"
+
+
+def trim_attempts(now: float, attempts: list[float]) -> list[float]:
+    return [attempt for attempt in attempts if now - attempt <= get_login_limits()["window_seconds"]]
+
+
+def is_login_blocked(request: Request) -> bool:
+    entry = login_attempts.get(get_client_ip(request))
+    now = time.time()
+    if not entry:
+        return False
+    lock_until = float(entry.get("lock_until", 0))
+    if lock_until > now:
+        return True
+    if lock_until:
+        login_attempts.pop(get_client_ip(request), None)
+    return False
+
+
+def record_failed_login(request: Request) -> None:
+    ip = get_client_ip(request)
+    now = time.time()
+    limits = get_login_limits()
+    entry = login_attempts.get(ip, {"attempts": [], "lock_until": 0.0})
+    attempts = trim_attempts(now, list(entry.get("attempts", []))) + [now]
+    lock_until = float(entry.get("lock_until", 0))
+    if len(attempts) >= limits["max_attempts"]:
+        lock_until = now + limits["lockout_seconds"]
+        attempts = []
+    login_attempts[ip] = {"attempts": attempts, "lock_until": lock_until}
+
+
+def clear_failed_logins(request: Request) -> None:
+    login_attempts.pop(get_client_ip(request), None)
+
+
+def is_authenticated_request(request: Request) -> tuple[bool, str | None]:
+    session = decode_session_cookie(request.cookies.get(SESSION_COOKIE_NAME))
+    if not session:
+        return False, None
+    username = session["username"]
+    expected_username = str(get_auth_config()["username"])
+    if not hmac.compare_digest(str(username), expected_username):
+        return False, None
+    return True, str(username)
+
+
+def set_session_cookie(response: Response, username: str) -> None:
+    config = get_auth_config()
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=encode_session_cookie(username),
+        max_age=int(config["session_max_age_seconds"]),
+        httponly=True,
+        secure=bool(config["session_secure"]),
+        samesite="lax",
+        path="/",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=bool(get_auth_config()["session_secure"]),
+        samesite="lax",
+        path="/",
+    )
 
 
 def get_session():
@@ -297,6 +469,14 @@ class DeleteProjectResponse(BaseModel):
     deletedProjectId: str
 
 
+class ReorderWorkspacesRequest(BaseModel):
+    workspaceIds: list[str]
+
+
+class ReorderProjectsRequest(BaseModel):
+    projectIds: list[str]
+
+
 class AvailableTaskItem(BaseModel):
     workspaceId: str
     workspaceName: str
@@ -312,6 +492,16 @@ class CompleteTaskResponse(BaseModel):
     taskId: str
     status: Literal["done"]
     graphVersion: int
+
+
+class LoginRequest(BaseModel):
+    username: str = ""
+    password: str = ""
+
+
+class AuthSessionResponse(BaseModel):
+    authenticated: bool
+    username: str | None = None
 
 
 def serialize_project_response(project: ProjectModel, workspace_id: str | None = None) -> ProjectGraphResponse:
@@ -411,7 +601,7 @@ def serialize_project_list_item(project: ProjectModel) -> ProjectListItem:
 
 
 def serialize_workspace(workspace: WorkspaceModel) -> WorkspaceListItem:
-    projects = sorted(workspace.projects, key=lambda project: project.updated_at, reverse=True)
+    projects = sorted(workspace.projects, key=lambda project: (project.sort_order, project.updated_at), reverse=False)
     return WorkspaceListItem(
         workspaceId=workspace.id,
         name=workspace.name,
@@ -424,8 +614,44 @@ def serialize_workspace(workspace: WorkspaceModel) -> WorkspaceListItem:
     )
 
 
+def next_workspace_sort_order(session: Session) -> int:
+    orders = session.scalars(select(WorkspaceModel.sort_order)).all()
+    return (max(orders) + 1) if orders else 0
+
+
+def next_project_sort_order(session: Session, workspace_id: str) -> int:
+    orders = session.scalars(select(ProjectModel.sort_order).where(ProjectModel.workspace_id == workspace_id)).all()
+    return (max(orders) + 1) if orders else 0
+
+
+def reorder_workspaces_in_session(session: Session, workspace_ids: list[str]) -> list[WorkspaceModel]:
+    workspaces = session.scalars(select(WorkspaceModel)).all()
+    by_id = {workspace.id: workspace for workspace in workspaces}
+    if set(workspace_ids) != set(by_id):
+        raise HTTPException(status_code=400, detail="workspaceIds must include every workspace exactly once.")
+    for index, workspace_id in enumerate(workspace_ids):
+        by_id[workspace_id].sort_order = index
+    return sorted(workspaces, key=lambda workspace: workspace.sort_order)
+
+
+def reorder_projects_in_session(session: Session, workspace_id: str, project_ids: list[str]) -> list[ProjectModel]:
+    projects = session.scalars(select(ProjectModel).where(ProjectModel.workspace_id == workspace_id)).all()
+    by_id = {project.id: project for project in projects}
+    if set(project_ids) != set(by_id):
+        raise HTTPException(status_code=400, detail="projectIds must include every project in the workspace exactly once.")
+    for index, project_id in enumerate(project_ids):
+        by_id[project_id].sort_order = index
+    return sorted(projects, key=lambda project: project.sort_order)
+
+
 def create_default_workspace(session: Session) -> WorkspaceModel:
-    workspace = WorkspaceModel(id=str(uuid4()), name="Default Workspace", description="", tags=[])
+    workspace = WorkspaceModel(
+        id=str(uuid4()),
+        name="Default Workspace",
+        description="",
+        tags=[],
+        sort_order=next_workspace_sort_order(session),
+    )
     session.add(workspace)
     session.flush()
     return workspace
@@ -789,15 +1015,59 @@ def apply_operations(session: Session, project: ProjectModel, operations: list[G
 app = FastAPI(title="Project Planner Workflow Service", version="0.2.0")
 
 
+@app.middleware("http")
+async def require_authenticated_api_session(request: Request, call_next):
+    if request.url.path.startswith("/api/") and request.url.path not in PUBLIC_API_PATHS:
+        authenticated, _ = is_authenticated_request(request)
+        if not authenticated:
+            return JSONResponse(status_code=401, content={"detail": "Authentication required."})
+    return await call_next(request)
+
+
 @app.get("/api/health")
 def health(session: Session = Depends(get_session)):
     session.execute(select(1))
     return {"status": "ok"}
 
 
+@app.post("/api/auth/login")
+def login(payload: LoginRequest, request: Request):
+    if is_login_blocked(request):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Please try again later.")
+
+    config = get_auth_config()
+    username = payload.username.strip()
+    password = payload.password
+    valid_username = hmac.compare_digest(username, str(config["username"]))
+    valid_password = hmac.compare_digest(password, str(config["password"]))
+    if not (valid_username and valid_password):
+        record_failed_login(request)
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+
+    clear_failed_logins(request)
+    response = JSONResponse(status_code=200, content={"authenticated": True, "username": username})
+    set_session_cookie(response, username)
+    return response
+
+
+@app.post("/api/auth/logout")
+def logout():
+    response = JSONResponse(status_code=200, content={"authenticated": False})
+    clear_session_cookie(response)
+    return response
+
+
+@app.get("/api/auth/session", response_model=AuthSessionResponse)
+def auth_session(request: Request):
+    authenticated, username = is_authenticated_request(request)
+    if not authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return AuthSessionResponse(authenticated=True, username=username)
+
+
 @app.get("/api/workspaces", response_model=list[WorkspaceListItem])
 def list_workspaces(session: Session = Depends(get_session)):
-    workspaces = session.scalars(select(WorkspaceModel).order_by(WorkspaceModel.updated_at.desc())).all()
+    workspaces = session.scalars(select(WorkspaceModel).order_by(WorkspaceModel.sort_order.asc(), WorkspaceModel.updated_at.desc())).all()
     if not workspaces:
         workspace = create_default_workspace(session)
         session.commit()
@@ -839,7 +1109,12 @@ def create_workspace(payload: CreateWorkspaceRequest, session: Session = Depends
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="Workspace name cannot be blank.")
-    workspace = WorkspaceModel(id=str(uuid4()), name=name, description=payload.description.strip())
+    workspace = WorkspaceModel(
+        id=str(uuid4()),
+        name=name,
+        description=payload.description.strip(),
+        sort_order=next_workspace_sort_order(session),
+    )
     session.add(workspace)
     session.commit()
     session.refresh(workspace)
@@ -873,16 +1148,25 @@ def update_workspace(
     return serialize_workspace(workspace)
 
 
+@app.post("/api/workspaces/reorder", response_model=list[WorkspaceListItem])
+def reorder_workspaces(payload: ReorderWorkspacesRequest, session: Session = Depends(get_session)):
+    ordered_workspaces = reorder_workspaces_in_session(session, payload.workspaceIds)
+    session.commit()
+    return [serialize_workspace(workspace) for workspace in ordered_workspaces]
+
+
 @app.delete("/api/workspaces/{workspace_id}", response_model=DeleteWorkspaceResponse)
 def delete_workspace(workspace_id: str, session: Session = Depends(get_session)):
     workspace = ensure_workspace(session, workspace_id)
     remaining = session.scalars(
         select(WorkspaceModel)
         .where(WorkspaceModel.id != workspace_id)
-        .order_by(WorkspaceModel.updated_at.desc())
+        .order_by(WorkspaceModel.sort_order.asc(), WorkspaceModel.updated_at.desc())
     ).all()
     session.delete(workspace)
     session.flush()
+    for index, remaining_workspace in enumerate(remaining):
+        remaining_workspace.sort_order = index
     replacement = remaining[0] if remaining else create_default_workspace(session)
     session.commit()
     return DeleteWorkspaceResponse(
@@ -897,9 +1181,17 @@ def list_projects(workspace_id: str, session: Session = Depends(get_session)):
     projects = session.scalars(
         select(ProjectModel)
         .where(ProjectModel.workspace_id == workspace_id)
-        .order_by(ProjectModel.updated_at.desc())
+        .order_by(ProjectModel.sort_order.asc(), ProjectModel.updated_at.desc())
     ).all()
     return [serialize_project_list_item(project) for project in projects]
+
+
+@app.post("/api/workspaces/{workspace_id}/projects/reorder", response_model=list[ProjectListItem])
+def reorder_projects(workspace_id: str, payload: ReorderProjectsRequest, session: Session = Depends(get_session)):
+    ensure_workspace(session, workspace_id)
+    ordered_projects = reorder_projects_in_session(session, workspace_id, payload.projectIds)
+    session.commit()
+    return [serialize_project_list_item(project) for project in ordered_projects]
 
 
 @app.post("/api/workspaces/{workspace_id}/projects", response_model=ProjectGraphResponse, status_code=201)
@@ -921,6 +1213,7 @@ def create_project(
         description=snapshot.root.description,
         completion_criteria=snapshot.root.completionCriteria,
         tags=[],
+        sort_order=next_project_sort_order(session, workspace.id),
         graph_version=1,
     )
     workspace.tags = normalize_tags([*list(workspace.tags or []), *collect_snapshot_tags(snapshot)])
@@ -974,6 +1267,13 @@ def delete_project(workspace_id: str, project_id: str, session: Session = Depend
     project = ensure_project(session, workspace_id, project_id)
     workspace = project.workspace
     session.delete(project)
+    remaining_projects = session.scalars(
+        select(ProjectModel)
+        .where(ProjectModel.workspace_id == workspace_id, ProjectModel.id != project_id)
+        .order_by(ProjectModel.sort_order.asc(), ProjectModel.updated_at.desc())
+    ).all()
+    for index, remaining_project in enumerate(remaining_projects):
+        remaining_project.sort_order = index
     workspace.updated_at = utc_now()
     session.commit()
     return DeleteProjectResponse(deletedProjectId=project_id)

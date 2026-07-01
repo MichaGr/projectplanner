@@ -21,8 +21,12 @@ import {
   deleteProject,
   deleteWorkspace,
   fetchAvailableTasks,
+  fetchAuthSession,
   fetchProjectGraph,
   listWorkspaces,
+  logoutSession,
+  reorderProjects,
+  reorderWorkspaces,
   updateProject,
   updateWorkspace,
   WorkspaceSummary,
@@ -31,6 +35,7 @@ import type { ApplyProjectOperationsRequest } from './api';
 import {
   Check,
   Menu,
+  LogOut,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRight,
@@ -70,6 +75,12 @@ import {
   getGroupPath,
   wouldCreateCycle,
 } from './features/planner/model/graph-index';
+import {
+  extractNodeSubtree,
+  insertNodeSubtreeIntoSnapshot,
+  moveNodeWithinSnapshot,
+  removeNodeSubtreeFromSnapshot,
+} from './features/planner/model/nodeMove';
 import { ParticleGridBackground } from './features/planner/canvas/ParticleGridBackground';
 import { flowEdgeTypes, flowNodeTypes } from './features/planner/canvas/FlowElements';
 import { useDebouncedLocalStorage } from './hooks/useDebouncedLocalStorage';
@@ -281,6 +292,40 @@ const ensureUniqueNodeId = (nodes: PlannerNodeRecord[], proposedId: string, pref
   return nextId;
 };
 
+const reorderList = <T,>(items: T[], getId: (item: T) => string, orderedIds: string[]) => {
+  const byId = new Map(items.map((item) => [getId(item), item] as const));
+  return orderedIds.map((id) => byId.get(id)).filter((item): item is T => Boolean(item));
+};
+
+type NodeContextMenuState = {
+  nodeId: string;
+  kind: PlannerNodeRecord['kind'];
+  x: number;
+  y: number;
+};
+
+type LoadedMoveProject = {
+  workspaceId: string;
+  workspaceName: string;
+  projectId: string;
+  projectTitle: string;
+  graphVersion: number;
+  snapshot: PlannerSnapshot;
+};
+
+type MoveDestinationOption = {
+  key: string;
+  workspaceId: string;
+  workspaceName: string;
+  projectId: string;
+  projectTitle: string;
+  groupId: string | null;
+  label: string;
+  helper: string;
+  depth: number;
+  disabled: boolean;
+};
+
 const getStoredTheme = (): ThemeMode => {
   return 'dark';
 };
@@ -398,6 +443,7 @@ function PlannerApp() {
   const [workspaceTreeError, setWorkspaceTreeError] = useState<string | null>(null);
   const [loadingStoredProjectId, setLoadingStoredProjectId] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking');
+  const [authenticatedUsername, setAuthenticatedUsername] = useState<string | null>(null);
   const [, setSessionJournal] = useState<SessionJournalEntry[]>([]);
   const [panelPreferences, setPanelPreferences] = useState(() => getStoredPanelPreferences());
   const [taskScope, setTaskScope] = useState<TaskScopePreference>(() => getStoredTaskScope());
@@ -409,6 +455,12 @@ function PlannerApp() {
   const [workspaceTags, setWorkspaceTags] = useState<string[]>([]);
   const [isNodeTagModalOpen, setIsNodeTagModalOpen] = useState(false);
   const [nodeTagModalQuery, setNodeTagModalQuery] = useState('');
+  const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenuState | null>(null);
+  const [moveDialogNodeId, setMoveDialogNodeId] = useState<string | null>(null);
+  const [loadedMoveProjects, setLoadedMoveProjects] = useState<LoadedMoveProject[]>([]);
+  const [isMoveDialogLoading, setIsMoveDialogLoading] = useState(false);
+  const [isMoveDialogSubmitting, setIsMoveDialogSubmitting] = useState(false);
+  const [moveDialogError, setMoveDialogError] = useState<string | null>(null);
   const [dragDropTarget, setDragDropTarget] = useState<NodeDropTarget>(null);
   const [dragPreviewNodeId, setDragPreviewNodeId] = useState<string | null>(null);
   const [isCanvasPointerDown, setIsCanvasPointerDown] = useState(false);
@@ -445,6 +497,18 @@ function PlannerApp() {
   const appendSessionJournal = useCallback((entry: SessionJournalEntry | SessionJournalEntry[]) => {
     const nextEntries = Array.isArray(entry) ? entry : [entry];
     setSessionJournal((current) => nextEntries.reduce(mergeSessionJournalEntry, current));
+  }, []);
+
+  const closeNodeContextMenu = useCallback(() => {
+    setNodeContextMenu(null);
+  }, []);
+
+  const closeMoveDialog = useCallback(() => {
+    setMoveDialogNodeId(null);
+    setLoadedMoveProjects([]);
+    setIsMoveDialogLoading(false);
+    setIsMoveDialogSubmitting(false);
+    setMoveDialogError(null);
   }, []);
 
   const displaySnapshot = useMemo(
@@ -751,6 +815,8 @@ function PlannerApp() {
     setGraphSyncError(null);
 
     try {
+      const session = await fetchAuthSession();
+      setAuthenticatedUsername(session.username);
       await checkWorkflowService();
       setBackendStatus('online');
       const nextWorkspaces = await loadWorkspaceTree();
@@ -893,6 +959,14 @@ function PlannerApp() {
     showNotification('Restored pending local changes.');
   }, [pendingRecoveryBundle, setApprovedSnapshot, showNotification]);
 
+  const handleLogout = useCallback(async () => {
+    try {
+      await logoutSession();
+    } finally {
+      window.location.assign('/login');
+    }
+  }, []);
+
   const discardPendingRecovery = useCallback(() => {
     writeRecoveryBundle(null);
     setPendingRecoveryBundle(null);
@@ -919,6 +993,12 @@ function PlannerApp() {
   }, [activeTabId, scopeNodes, toolbarNodeId]);
 
   useEffect(() => {
+    if (nodeContextMenu && !scopeNodes.some((node) => node.id === nodeContextMenu.nodeId)) {
+      setNodeContextMenu(null);
+    }
+  }, [nodeContextMenu, scopeNodes]);
+
+  useEffect(() => {
     if (selectedEdgeId && !scopeEdges.some((edge) => edge.id === selectedEdgeId)) {
       setSelectedEdgeId(null);
     }
@@ -932,10 +1012,35 @@ function PlannerApp() {
       setIsProjectMenuOpen(false);
       setIsLeftDrawerOpen(false);
       setIsRightDrawerOpen(false);
+      setNodeContextMenu(null);
+      setMoveDialogNodeId(null);
+      setLoadedMoveProjects([]);
+      setIsMoveDialogLoading(false);
+      setIsMoveDialogSubmitting(false);
+      setMoveDialogError(null);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  useEffect(() => {
+    if (!nodeContextMenu) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.node-context-menu')) {
+        return;
+      }
+      setNodeContextMenu(null);
+    };
+
+    window.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [nodeContextMenu]);
 
   useEffect(() => {
     const handlePointerMove = (event: MouseEvent) => {
@@ -1053,6 +1158,75 @@ function PlannerApp() {
       : panelItem
         ? interactiveDrafts[getDraftTargetKey('node', panelItem.id)] ?? null
         : null;
+  const moveDialogNode = moveDialogNodeId ? displaySnapshot.nodes.find((node) => node.id === moveDialogNodeId) ?? null : null;
+  const moveDialogDescendantIds = useMemo(
+    () => (moveDialogNode ? new Set(getDescendantNodeIds(displaySnapshot.nodes, moveDialogNode.id)) : new Set<string>()),
+    [displaySnapshot.nodes, moveDialogNode],
+  );
+  const moveProjectMap = useMemo(
+    () => new Map(loadedMoveProjects.map((project) => [`${project.workspaceId}:${project.projectId}`, project] as const)),
+    [loadedMoveProjects],
+  );
+  const moveDestinationOptions = useMemo<MoveDestinationOption[]>(() => {
+    if (!moveDialogNode) {
+      return [];
+    }
+
+    const options: MoveDestinationOption[] = [];
+    const appendGroupOptions = (
+      workspace: WorkspaceSummary,
+      projectSummary: WorkspaceSummary['projects'][number],
+      projectSnapshot: PlannerSnapshot,
+      parentId: string | null,
+      depth: number,
+    ) => {
+      const groups = projectSnapshot.nodes.filter((node) => node.kind === 'group' && (node.parentId ?? null) === parentId);
+      for (const group of groups) {
+        const sameProject = workspace.workspaceId === workspaceId && projectSummary.projectId === projectId;
+        const disabled =
+          (sameProject && moveDialogNode.parentId === group.id) ||
+          (sameProject && (group.id === moveDialogNode.id || moveDialogDescendantIds.has(group.id)));
+        options.push({
+          key: `${workspace.workspaceId}:${projectSummary.projectId}:group:${group.id}`,
+          workspaceId: workspace.workspaceId,
+          workspaceName: workspace.name,
+          projectId: projectSummary.projectId,
+          projectTitle: projectSummary.title || 'Untitled Project',
+          groupId: group.id,
+          label: group.title || 'Untitled group',
+          helper: `${workspace.name} / ${projectSummary.title || 'Untitled Project'}`,
+          depth,
+          disabled,
+        });
+        appendGroupOptions(workspace, projectSummary, projectSnapshot, group.id, depth + 1);
+      }
+    };
+
+    for (const workspace of workspaces) {
+      for (const projectSummary of workspace.projects) {
+        const project = moveProjectMap.get(`${workspace.workspaceId}:${projectSummary.projectId}`);
+        if (!project) {
+          continue;
+        }
+        const sameProject = workspace.workspaceId === workspaceId && projectSummary.projectId === projectId;
+        options.push({
+          key: `${workspace.workspaceId}:${projectSummary.projectId}:root`,
+          workspaceId: workspace.workspaceId,
+          workspaceName: workspace.name,
+          projectId: projectSummary.projectId,
+          projectTitle: projectSummary.title || 'Untitled Project',
+          groupId: null,
+          label: 'Project root',
+          helper: `${workspace.name} / ${projectSummary.title || 'Untitled Project'}`,
+          depth: 0,
+          disabled: sameProject && !moveDialogNode.parentId,
+        });
+        appendGroupOptions(workspace, projectSummary, project.snapshot, null, 1);
+      }
+    }
+
+    return options;
+  }, [loadedMoveProjects, moveDialogDescendantIds, moveDialogNode, moveProjectMap, projectId, workspaceId, workspaces]);
 
   useEffect(() => {
     setNodeTagModalQuery('');
@@ -1060,6 +1234,66 @@ function PlannerApp() {
       setIsNodeTagModalOpen(false);
     }
   }, [tagTargetNode]);
+
+  useEffect(() => {
+    if (!moveDialogNodeId) {
+      return;
+    }
+
+    let cancelled = false;
+    const loadProjects = async () => {
+      setIsMoveDialogLoading(true);
+      setMoveDialogError(null);
+      try {
+        const projects = await Promise.all(
+          workspaces.flatMap((workspace) =>
+            workspace.projects.map(async (project) => {
+              if (workspace.workspaceId === workspaceId && project.projectId === projectId) {
+                return {
+                  workspaceId: workspace.workspaceId,
+                  workspaceName: workspace.name,
+                  projectId: project.projectId,
+                  projectTitle: project.title || 'Untitled Project',
+                  graphVersion: approvedGraphVersionRef.current,
+                  snapshot: sanitizeSnapshot(displaySnapshot),
+                } satisfies LoadedMoveProject;
+              }
+
+              const response = await fetchProjectGraph(workspace.workspaceId, project.projectId);
+              return {
+                workspaceId: workspace.workspaceId,
+                workspaceName: workspace.name,
+                projectId: project.projectId,
+                projectTitle: project.title || 'Untitled Project',
+                graphVersion: response.graphVersion,
+                snapshot: sanitizeSnapshot(response.project as PlannerSnapshot),
+              } satisfies LoadedMoveProject;
+            }),
+          ),
+        );
+
+        if (cancelled) {
+          return;
+        }
+
+        setLoadedMoveProjects(projects);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setMoveDialogError(error instanceof Error ? error.message : 'Could not load move destinations.');
+      } finally {
+        if (!cancelled) {
+          setIsMoveDialogLoading(false);
+        }
+      }
+    };
+
+    void loadProjects();
+    return () => {
+      cancelled = true;
+    };
+  }, [approvedGraphVersion, displaySnapshot, moveDialogNodeId, projectId, workspaceId, workspaces]);
 
   useEffect(() => {
     if (!shouldFocusSelectedTitle || panelMode !== 'selected' || !selectedNode) {
@@ -1858,6 +2092,14 @@ function PlannerApp() {
     setSelectedNodeId(nodeId);
   }, [appendSessionJournal, applyPredictedSnapshotChange, snapshot]);
 
+  const handleContextMenuCreateGroup = useCallback(() => {
+    if (!nodeContextMenu || nodeContextMenu.kind !== 'task') {
+      return;
+    }
+    splitTask(nodeContextMenu.nodeId);
+    closeNodeContextMenu();
+  }, [closeNodeContextMenu, nodeContextMenu, splitTask]);
+
   const moveNodeIntoGroup = useCallback(
     (draggedNodeId: string, targetGroupId: string, draggedPosition: { x: number; y: number }) => {
       const draggedNode = snapshot.nodes.find((node) => node.id === draggedNodeId);
@@ -2162,6 +2404,19 @@ function PlannerApp() {
     }
   }, [loadWorkspaceTree, mergeWorkspaceSummary]);
 
+  const persistWorkspaceOrder = useCallback(async (workspaceIds: string[]) => {
+    const previous = workspaces;
+    setWorkspaces((current) => reorderList(current, (workspace) => workspace.workspaceId, workspaceIds));
+    try {
+      const reordered = await reorderWorkspaces(workspaceIds);
+      setWorkspaces(reordered);
+    } catch (error) {
+      setWorkspaces(previous);
+      setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not reorder workspaces.');
+      void loadWorkspaceTree();
+    }
+  }, [loadWorkspaceTree, workspaces]);
+
   const removeWorkspace = useCallback(async (workspace: WorkspaceSummary) => {
     const confirmation = window.prompt(`Type "${workspace.name}" to delete this workspace and all of its projects.`);
     if (confirmation !== workspace.name) return;
@@ -2194,6 +2449,29 @@ function PlannerApp() {
       setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not rename the project.');
     }
   }, [applyServerProjectGraph, flushProjectGraphSync, loadWorkspaceTree, projectId]);
+
+  const persistProjectOrder = useCallback(async (nextWorkspaceId: string, projectIds: string[]) => {
+    const previous = workspaces;
+    setWorkspaces((current) =>
+      current.map((workspace) =>
+        workspace.workspaceId === nextWorkspaceId
+          ? { ...workspace, projects: reorderList(workspace.projects, (project) => project.projectId, projectIds) }
+          : workspace,
+      ),
+    );
+    try {
+      const reordered = await reorderProjects(nextWorkspaceId, projectIds);
+      setWorkspaces((current) =>
+        current.map((workspace) =>
+          workspace.workspaceId === nextWorkspaceId ? { ...workspace, projects: reordered } : workspace,
+        ),
+      );
+    } catch (error) {
+      setWorkspaces(previous);
+      setWorkspaceTreeError(error instanceof Error ? error.message : 'Could not reorder projects.');
+      void loadWorkspaceTree();
+    }
+  }, [loadWorkspaceTree, workspaces]);
 
   const removeStoredProject = useCallback(async (nextWorkspaceId: string, nextProjectId: string, title: string) => {
     if (!window.confirm(`Delete project "${title}"? This removes all of its nodes and edges.`)) return;
@@ -2234,6 +2512,157 @@ function PlannerApp() {
       deleteItems([nodeId]);
     },
     [deleteItems],
+  );
+  const handleContextMenuDelete = useCallback(() => {
+    if (!nodeContextMenu) {
+      return;
+    }
+    deleteItems([nodeContextMenu.nodeId]);
+    closeNodeContextMenu();
+  }, [closeNodeContextMenu, deleteItems, nodeContextMenu]);
+
+  const handleContextMenuMove = useCallback(() => {
+    if (!nodeContextMenu) {
+      return;
+    }
+    setMoveDialogNodeId(nodeContextMenu.nodeId);
+    closeNodeContextMenu();
+  }, [closeNodeContextMenu, nodeContextMenu]);
+
+  const moveNodeToDestination = useCallback(
+    async (destination: MoveDestinationOption) => {
+      if (!moveDialogNode) {
+        return;
+      }
+
+      const sourceLabel = formatScopeTitle(displaySnapshot, moveDialogNode.parentId);
+      const destinationLabel =
+        destination.groupId === null
+          ? `${destination.projectTitle} / Project root`
+          : `${destination.projectTitle} / ${destination.label}`;
+
+      if (destination.workspaceId === workspaceId && destination.projectId === projectId) {
+        applyPredictedSnapshotChange('Move node', (current) =>
+          moveNodeWithinSnapshot(current, moveDialogNode.id, destination.groupId),
+        );
+        appendSessionJournal({
+          type: 'update_node',
+          entityKey: `node:${moveDialogNode.id}`,
+          initialNodeState: nodeJournalStateFromNode(moveDialogNode, sourceLabel),
+          finalNodeState: nodeJournalStateFromNode(
+            { ...moveDialogNode, parentId: destination.groupId ?? undefined },
+            destination.groupId ? formatScopeTitle(displaySnapshot, destination.groupId) : destination.projectTitle,
+          ),
+          nodeAction: 'updated',
+          title: `Moved ${moveDialogNode.title} to ${destinationLabel}`,
+          detail: `Moved ${moveDialogNode.kind} from ${sourceLabel} to ${destinationLabel}.`,
+          scopeTitle: destination.groupId ? formatScopeTitle(displaySnapshot, destination.groupId) : destination.projectTitle,
+        });
+        closeMoveDialog();
+        return;
+      }
+
+      setIsMoveDialogSubmitting(true);
+      setMoveDialogError(null);
+      try {
+        await flushProjectGraphSync();
+        const sourceSnapshot = sanitizeSnapshot(snapshotRef.current);
+        const freshNode = sourceSnapshot.nodes.find((node) => node.id === moveDialogNode.id);
+        const subtree = extractNodeSubtree(sourceSnapshot, moveDialogNode.id);
+        if (!freshNode || !subtree || !workspaceIdRef.current || !projectIdRef.current) {
+          throw new Error('Could not prepare the selected node for moving.');
+        }
+
+        const destinationProject = await fetchProjectGraph(destination.workspaceId, destination.projectId);
+        const destinationSnapshot = sanitizeSnapshot(destinationProject.project as PlannerSnapshot);
+        const inserted = insertNodeSubtreeIntoSnapshot(destinationSnapshot, subtree, destination.groupId);
+        const destinationPayload: ApplyProjectOperationsRequest = {
+          transactionId: uid('transaction'),
+          baseGraphVersion: destinationProject.graphVersion,
+          operations: buildGraphOperations(destinationSnapshot, inserted.snapshot),
+        };
+        const destinationResult = await applyProjectGraphOperations(
+          destination.workspaceId,
+          destination.projectId,
+          destinationPayload,
+        );
+        if (destinationResult.status !== 'accepted') {
+          throw new Error(destinationResult.message);
+        }
+
+        const sourceNextSnapshot = removeNodeSubtreeFromSnapshot(sourceSnapshot, moveDialogNode.id);
+        const sourcePayload: ApplyProjectOperationsRequest = {
+          transactionId: uid('transaction'),
+          baseGraphVersion: approvedGraphVersionRef.current,
+          operations: buildGraphOperations(sourceSnapshot, sourceNextSnapshot),
+        };
+        const sourceResult = await applyProjectGraphOperations(
+          workspaceIdRef.current,
+          projectIdRef.current,
+          sourcePayload,
+        );
+
+        if (sourceResult.status !== 'accepted') {
+          const refreshedSource = await fetchProjectGraph(workspaceIdRef.current, projectIdRef.current);
+          applyServerProjectGraph(
+            refreshedSource.workspaceId,
+            refreshedSource.projectId,
+            refreshedSource.project as PlannerSnapshot,
+            refreshedSource.graphVersion,
+          );
+          await loadWorkspaceTree();
+          throw new Error(sourceResult.message);
+        }
+
+        applyServerProjectGraph(
+          sourceResult.workspaceId,
+          sourceResult.projectId,
+          sourceResult.project as PlannerSnapshot,
+          sourceResult.graphVersion,
+        );
+        appendSessionJournal({
+          type: 'update_node',
+          entityKey: `node:${freshNode.id}`,
+          initialNodeState: nodeJournalStateFromNode(freshNode, sourceLabel),
+          finalNodeState: nodeJournalStateFromNode(
+            { ...freshNode, parentId: undefined },
+            `${destination.workspaceName} / ${destinationLabel}`,
+          ),
+          nodeAction: 'updated',
+          title: `Moved ${freshNode.title} to ${destinationLabel}`,
+          detail: `Moved ${freshNode.kind} from ${sourceLabel} to ${destination.workspaceName} / ${destinationLabel}.`,
+          scopeTitle: `${destination.workspaceName} / ${destinationLabel}`,
+        });
+        setOpenTabs((current) => current.filter((tab) => tab.kind === 'main' || !subtree.nodeIds.has(tab.id)));
+        setActiveTabId((current) => (subtree.nodeIds.has(current) ? 'main' : current));
+        setSelectedNodeId((current) => (current && subtree.nodeIds.has(current) ? null : current));
+        setSelectedNodeIds((current) => current.filter((nodeId) => !subtree.nodeIds.has(nodeId)));
+        setToolbarNodeId((current) => (current && subtree.nodeIds.has(current) ? null : current));
+        setSelectedEdgeId(null);
+        await loadWorkspaceTree();
+        showNotification(`Moved ${freshNode.title} to ${destination.workspaceName} / ${destinationLabel}.`);
+        closeMoveDialog();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not move the selected node.';
+        setMoveDialogError(message);
+        showNotification(message, 'error');
+      } finally {
+        setIsMoveDialogSubmitting(false);
+      }
+    },
+    [
+      appendSessionJournal,
+      applyPredictedSnapshotChange,
+      applyServerProjectGraph,
+      closeMoveDialog,
+      displaySnapshot,
+      flushProjectGraphSync,
+      loadWorkspaceTree,
+      moveDialogNode,
+      projectId,
+      showNotification,
+      workspaceId,
+    ],
   );
   const flowToggleTaskStatus = useStableCallback(toggleTaskStatus);
   const flowSplitTask = useStableCallback(splitTask);
@@ -2556,10 +2985,12 @@ function PlannerApp() {
             onCreateWorkspace={createNewWorkspace}
             onRenameWorkspace={renameWorkspace}
             onRemoveWorkspace={removeWorkspace}
+            onReorderWorkspaces={persistWorkspaceOrder}
             onOpenProject={openStoredProject}
             onCreateProject={createNewProject}
             onRenameProject={renameStoredProject}
             onRemoveProject={removeStoredProject}
+            onReorderProjects={persistProjectOrder}
             onImportProject={importProject}
             onExportProject={saveProject}
           />
@@ -2675,6 +3106,17 @@ function PlannerApp() {
           </div>
 
           <div className="editor-sidebar__footer">
+            {authenticatedUsername ? (
+              <button
+                type="button"
+                className="sidebar-settings-button"
+                onClick={() => void handleLogout()}
+                aria-label="Log out"
+              >
+                <LogOut aria-hidden="true" />
+                Log out {authenticatedUsername}
+              </button>
+            ) : null}
             <button
               type="button"
               className="sidebar-settings-button"
@@ -2865,7 +3307,7 @@ function PlannerApp() {
                   panOnScrollMode={PanOnScrollMode.Free}
                   panOnDrag={[1, 2]}
                   selectionOnDrag
-                  selectionMode={SelectionMode.Full}
+                  selectionMode={SelectionMode.Partial}
                   zoomOnScroll={false}
                   zoomOnPinch
                   zoomOnDoubleClick={false}
@@ -2876,6 +3318,20 @@ function PlannerApp() {
                     setSelectedNodeIds([node.id]);
                     setToolbarNodeId(node.id);
                     setSelectedEdgeId(null);
+                    setNodeContextMenu(null);
+                  }}
+                  onNodeContextMenu={(event, node) => {
+                    event.preventDefault();
+                    setSelectedNodeId(node.id);
+                    setSelectedNodeIds([node.id]);
+                    setSelectedEdgeId(null);
+                    setToolbarNodeId(null);
+                    setNodeContextMenu({
+                      nodeId: node.id,
+                      kind: node.data.kind,
+                      x: event.clientX,
+                      y: event.clientY,
+                    });
                   }}
                   onNodeDoubleClick={(_, node) => {
                     const plannerNode = snapshot.nodes.find((entry) => entry.id === node.id);
@@ -2884,6 +3340,7 @@ function PlannerApp() {
                       setSelectedNodeId(plannerNode.id);
                       setSelectedNodeIds([plannerNode.id]);
                       setToolbarNodeId(null);
+                      setNodeContextMenu(null);
                     }
                   }}
                   onEdgeClick={(_, edge) => {
@@ -2891,11 +3348,13 @@ function PlannerApp() {
                     setSelectedNodeId(null);
                     setSelectedNodeIds([]);
                     setToolbarNodeId(null);
+                    setNodeContextMenu(null);
                   }}
                   onNodesChange={handleNodesChange}
                   onNodesDelete={(nodes) => deleteItems(nodes.map((node) => node.id))}
                   onNodeDrag={(event, node) => {
                     setToolbarNodeId(null);
+                    setNodeContextMenu(null);
                     const nextDropTarget = resolveNodeDropTarget(node.id, node.position);
                     setDragDropTarget(nextDropTarget);
                     setDragPreviewNodeId(node.id);
@@ -2946,11 +3405,34 @@ function PlannerApp() {
                     setSelectedEdgeId(null);
                     setDragDropTarget(null);
                     setDragPreviewNodeId(null);
+                    setNodeContextMenu(null);
                   }}
                   proOptions={FLOW_PRO_OPTIONS}
                 >
                 </ReactFlow>
               </main>
+
+              {nodeContextMenu ? (
+                <div
+                  className="node-context-menu"
+                  role="menu"
+                  aria-label="Node actions"
+                  style={{ left: nodeContextMenu.x, top: nodeContextMenu.y }}
+                  onContextMenu={(event) => event.preventDefault()}
+                >
+                  <button type="button" role="menuitem" onClick={handleContextMenuMove}>
+                    Move
+                  </button>
+                  {nodeContextMenu.kind === 'task' ? (
+                    <button type="button" role="menuitem" onClick={handleContextMenuCreateGroup}>
+                      Create group
+                    </button>
+                  ) : null}
+                  <button type="button" role="menuitem" className="is-danger" onClick={handleContextMenuDelete}>
+                    Delete
+                  </button>
+                </div>
+              ) : null}
 
               <aside
                 className={[
@@ -3179,6 +3661,84 @@ function PlannerApp() {
                 <p className="node-tag-editor__empty">Press Enter to create this new workspace tag.</p>
               ) : (
                 <p className="node-tag-editor__empty">No workspace tags yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {moveDialogNode ? (
+        <div className="settings-overlay" role="dialog" aria-modal="true" aria-label={`Move ${moveDialogNode.title}`}>
+          <button
+            type="button"
+            className="settings-overlay__scrim"
+            onClick={closeMoveDialog}
+            aria-label="Close move dialog"
+          />
+          <div className="settings-overlay__panel move-dialog__panel">
+            <div className="panel settings-panel settings-panel--overlay move-dialog">
+              <div className="panel-header">
+                <h2>Move {moveDialogNode.title}</h2>
+                <button
+                  type="button"
+                  className="icon-button secondary"
+                  onClick={closeMoveDialog}
+                  aria-label="Close move dialog"
+                  disabled={isMoveDialogSubmitting}
+                >
+                  <X aria-hidden="true" />
+                </button>
+              </div>
+              <p className="muted move-dialog__subtitle">
+                Choose a workspace, project root, or node group destination for this {moveDialogNode.kind}.
+              </p>
+              {moveDialogError ? <p className="feedback feedback--error">{moveDialogError}</p> : null}
+              {isMoveDialogLoading ? (
+                <p className="node-tag-editor__empty">Loading destinations...</p>
+              ) : (
+                <div className="move-dialog__tree" role="tree" aria-label="Move destinations">
+                  {workspaces.map((workspace) => (
+                    <section key={workspace.workspaceId} className="move-dialog__workspace">
+                      <header className="move-dialog__workspace-header">
+                        <span>{workspace.name}</span>
+                        <small>{workspace.projects.length} project{workspace.projects.length === 1 ? '' : 's'}</small>
+                      </header>
+                      <div className="move-dialog__workspace-body">
+                        {workspace.projects.map((project) => {
+                          const options = moveDestinationOptions.filter(
+                            (option) => option.workspaceId === workspace.workspaceId && option.projectId === project.projectId,
+                          );
+                          return (
+                            <div key={project.projectId} className="move-dialog__project">
+                              <div className="move-dialog__project-title">{project.title || 'Untitled Project'}</div>
+                              {options.length > 0 ? (
+                                <div className="move-dialog__destination-list">
+                                  {options.map((option) => (
+                                    <button
+                                      key={option.key}
+                                      type="button"
+                                      className="move-dialog__destination"
+                                      style={{ paddingLeft: `${14 + option.depth * 18}px` }}
+                                      onClick={() => void moveNodeToDestination(option)}
+                                      disabled={option.disabled || isMoveDialogSubmitting}
+                                      role="treeitem"
+                                      aria-disabled={option.disabled}
+                                    >
+                                      <span>{option.label}</span>
+                                      <small>{option.helper}</small>
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="node-tag-editor__empty">Loading project graph...</p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  ))}
+                </div>
               )}
             </div>
           </div>

@@ -31,6 +31,11 @@ services:
       dockerfile: Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg://projectplanner:projectplanner@postgres:5432/projectplanner
+      APP_LOGIN_USERNAME: ${APP_LOGIN_USERNAME}
+      APP_LOGIN_PASSWORD: ${APP_LOGIN_PASSWORD}
+      APP_SESSION_SECRET: ${APP_SESSION_SECRET}
+      APP_SESSION_MAX_AGE_SECONDS: ${APP_SESSION_MAX_AGE_SECONDS:-43200}
+      APP_SESSION_SECURE: ${APP_SESSION_SECURE:-false}
     ports:
       - "8000:8000"
     depends_on:
@@ -70,6 +75,11 @@ services:
     profiles: ["test"]
     environment:
       DATABASE_URL: postgresql+psycopg://projectplanner:projectplanner@postgres-test:5432/projectplanner_test
+      APP_LOGIN_USERNAME: ${APP_LOGIN_USERNAME:-test-user}
+      APP_LOGIN_PASSWORD: ${APP_LOGIN_PASSWORD:-test-password}
+      APP_SESSION_SECRET: ${APP_SESSION_SECRET:-test-session-secret}
+      APP_SESSION_MAX_AGE_SECONDS: ${APP_SESSION_MAX_AGE_SECONDS:-43200}
+      APP_SESSION_SECURE: ${APP_SESSION_SECURE:-false}
     depends_on:
       postgres-test:
         condition: service_healthy

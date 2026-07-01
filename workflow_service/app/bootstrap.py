@@ -7,7 +7,7 @@ from alembic.config import Config
 from sqlalchemy import inspect
 import uvicorn
 
-from app.main import engine
+from app.main import engine, validate_runtime_auth_config
 
 
 def migrate_database() -> None:
@@ -22,5 +22,6 @@ def migrate_database() -> None:
 
 
 if __name__ == "__main__":
+    validate_runtime_auth_config()
     migrate_database()
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000)
