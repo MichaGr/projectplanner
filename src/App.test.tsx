@@ -1,12 +1,14 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import type { PlannerSnapshot } from './features/planner/model/types';
 
-const mockCheckWorkflowService = vi.fn();
-const mockFetchAuthSession = vi.fn();
-const mockListWorkspaces = vi.fn();
-const mockFetchProjectGraph = vi.fn();
+const { mockCheckWorkflowService, mockFetchAuthSession, mockListWorkspaces, mockFetchProjectGraph } = vi.hoisted(() => ({
+  mockCheckWorkflowService: vi.fn(),
+  mockFetchAuthSession: vi.fn(),
+  mockListWorkspaces: vi.fn(),
+  mockFetchProjectGraph: vi.fn(),
+}));
 
 vi.mock('./api', () => ({
   fetchAuthSession: mockFetchAuthSession,
@@ -113,6 +115,13 @@ const snapshot: PlannerSnapshot = {
 };
 
 describe('node context menu', () => {
+  const taskLabel = 'Define project vision';
+  const groupLabel = 'Build prototype';
+
+  afterEach(() => {
+    cleanup();
+  });
+
   beforeEach(() => {
     window.localStorage.clear();
     mockFetchAuthSession.mockResolvedValue({ authenticated: true, username: 'planner-admin' });
@@ -150,7 +159,8 @@ describe('node context menu', () => {
 
   it('shows move, create group, and delete for task nodes', async () => {
     render(<App />);
-    const task = await screen.findByRole('button', { name: 'Task node' });
+    const flow = screen.getAllByTestId('react-flow')[0]!;
+    const task = within(flow).getByRole('button', { name: taskLabel });
 
     fireEvent.contextMenu(task);
 
@@ -162,7 +172,8 @@ describe('node context menu', () => {
 
   it('shows only move and delete for group nodes', async () => {
     render(<App />);
-    const group = await screen.findByRole('button', { name: 'Group node' });
+    const flow = screen.getAllByTestId('react-flow')[0]!;
+    const group = within(flow).getByRole('button', { name: groupLabel });
 
     fireEvent.contextMenu(group);
 
@@ -173,19 +184,20 @@ describe('node context menu', () => {
 
   it('deletes nodes and converts tasks into groups from the context menu', async () => {
     render(<App />);
-    const task = await screen.findByRole('button', { name: 'Task node' });
+    const flow = screen.getAllByTestId('react-flow')[0]!;
+    const task = within(flow).getByRole('button', { name: taskLabel });
 
     fireEvent.contextMenu(task);
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Create group' }));
 
-    fireEvent.contextMenu(await screen.findByRole('button', { name: 'Task node' }));
+    fireEvent.contextMenu(within(flow).getByRole('button', { name: taskLabel }));
     await waitFor(() =>
       expect(screen.queryByRole('menuitem', { name: 'Create group' })).not.toBeInTheDocument(),
     );
 
-    fireEvent.contextMenu(await screen.findByRole('button', { name: 'Group node' }));
+    fireEvent.contextMenu(within(flow).getByRole('button', { name: groupLabel }));
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
 
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Group node' })).not.toBeInTheDocument());
+    await waitFor(() => expect(within(flow).queryByRole('button', { name: groupLabel })).not.toBeInTheDocument());
   });
 });

@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ComponentProps } from 'react';
 import { WorkspaceProjectNavigation } from './WorkspaceProjectNavigation';
 
@@ -45,6 +45,10 @@ const props = (overrides: Partial<ComponentProps<typeof WorkspaceProjectNavigati
 });
 
 describe('WorkspaceProjectNavigation', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   it('shows the active workspace and project', () => {
     render(<WorkspaceProjectNavigation {...props()} />);
     expect(screen.getByText('Personal')).toBeInTheDocument();
@@ -61,8 +65,8 @@ describe('WorkspaceProjectNavigation', () => {
   it('reorders projects via drag handle drop', () => {
     const onReorderProjects = vi.fn();
     render(<WorkspaceProjectNavigation {...props({ isProjectMenuOpen: true, onReorderProjects })} />);
-    fireEvent.dragStart(screen.getByLabelText('Reorder project Default'));
-    fireEvent.drop(screen.getByText('Second').closest('.sidebar-menu__item-row')!);
+    fireEvent.dragStart(screen.getAllByLabelText('Reorder project Default')[0]!);
+    fireEvent.drop(screen.getAllByRole('menuitem', { name: 'Second' })[0]!.closest('.sidebar-menu__item-row')!);
     expect(onReorderProjects).toHaveBeenCalledWith('workspace-1', ['project-2', 'project-1']);
   });
 });

@@ -24,6 +24,11 @@ DATABASE_URL = os.getenv(
     "postgresql+psycopg://projectplanner:projectplanner@postgres:5432/projectplanner",
 )
 
+DATABASE_POOL_SIZE = max(5, int(os.getenv("DATABASE_POOL_SIZE", "20")))
+DATABASE_MAX_OVERFLOW = max(0, int(os.getenv("DATABASE_MAX_OVERFLOW", "20")))
+DATABASE_POOL_TIMEOUT_SECONDS = max(1, int(os.getenv("DATABASE_POOL_TIMEOUT_SECONDS", "30")))
+DATABASE_POOL_RECYCLE_SECONDS = max(30, int(os.getenv("DATABASE_POOL_RECYCLE_SECONDS", "1800")))
+
 
 class Base(DeclarativeBase):
     pass
@@ -132,7 +137,15 @@ class EdgeModel(Base):
     project: Mapped[ProjectModel] = relationship(back_populates="edges")
 
 
-engine = create_engine(DATABASE_URL, future=True)
+engine = create_engine(
+    DATABASE_URL,
+    future=True,
+    pool_size=DATABASE_POOL_SIZE,
+    max_overflow=DATABASE_MAX_OVERFLOW,
+    pool_timeout=DATABASE_POOL_TIMEOUT_SECONDS,
+    pool_recycle=DATABASE_POOL_RECYCLE_SECONDS,
+    pool_pre_ping=True,
+)
 SessionLocal = sessionmaker(bind=engine, future=True, autoflush=False, autocommit=False)
 
 SESSION_COOKIE_NAME = "projectplanner_session"
@@ -484,6 +497,33 @@ class AvailableTaskItem(BaseModel):
     projectTitle: str
     taskId: str
     title: str
+    description: str = ""
+    dueDate: date | None = None
+    doDate: date | None = None
+    tags: list[str] = Field(default_factory=list)
+    scopePath: list[str] = Field(default_factory=list)
+
+
+class TaskDestinationGroupItem(BaseModel):
+    groupId: str
+    title: str
+    path: list[str] = Field(default_factory=list)
+    children: list["TaskDestinationGroupItem"] = Field(default_factory=list)
+
+
+class TaskDestinationProjectItem(BaseModel):
+    workspaceId: str
+    workspaceName: str
+    projectId: str
+    projectTitle: str
+    rootLabel: str = "Project root"
+    groups: list[TaskDestinationGroupItem] = Field(default_factory=list)
+
+
+class TaskDestinationWorkspaceItem(BaseModel):
+    workspaceId: str
+    workspaceName: str
+    projects: list[TaskDestinationProjectItem] = Field(default_factory=list)
 
 
 class CompleteTaskResponse(BaseModel):
@@ -502,6 +542,34 @@ class LoginRequest(BaseModel):
 class AuthSessionResponse(BaseModel):
     authenticated: bool
     username: str | None = None
+
+
+class CreateTaskRequest(BaseModel):
+    workspaceId: str
+    projectId: str
+    parentGroupId: str | None = None
+    title: str = Field(min_length=1)
+    description: str = ""
+    dueDate: date | None = None
+    doDate: date | None = None
+    tags: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_schedule(self):
+        if self.doDate and self.dueDate and self.doDate > self.dueDate:
+            raise ValueError("Do date cannot be later than due date.")
+        return self
+
+
+class CreateTaskResponse(BaseModel):
+    workspaceId: str
+    workspaceName: str
+    projectId: str
+    projectTitle: str
+    parentGroupId: str | None = None
+    taskId: str
+    title: str
+    graphVersion: int
 
 
 def serialize_project_response(project: ProjectModel, workspace_id: str | None = None) -> ProjectGraphResponse:
@@ -829,6 +897,19 @@ def available_task_items(projects: list[ProjectModel]) -> list[AvailableTaskItem
     for project in projects:
         snapshot = serialize_project(project)
         is_task_available = build_snapshot_availability_index(snapshot)
+        nodes_by_id = {node.id: node for node in snapshot.nodes}
+
+        def get_scope_path(node_id: str) -> list[str]:
+            path: list[str] = []
+            parent_id = nodes_by_id.get(node_id).parentId if nodes_by_id.get(node_id) else None
+            while parent_id:
+                parent = nodes_by_id.get(parent_id)
+                if not parent:
+                    break
+                path.append(parent.title or "Untitled group")
+                parent_id = parent.parentId
+            return list(reversed(path))
+
         for node in snapshot.nodes:
             if node.kind != "task" or not is_task_available(node.id):
                 continue
@@ -840,6 +921,11 @@ def available_task_items(projects: list[ProjectModel]) -> list[AvailableTaskItem
                     projectTitle=project.title,
                     taskId=node.id,
                     title=node.title,
+                    description=node.description,
+                    dueDate=node.dueDate,
+                    doDate=node.doDate,
+                    tags=list(node.tags),
+                    scopePath=get_scope_path(node.id),
                 )
             )
     return sorted(
@@ -851,6 +937,75 @@ def available_task_items(projects: list[ProjectModel]) -> list[AvailableTaskItem
             item.taskId,
         ),
     )
+
+
+def build_task_destination_groups(
+    nodes: list[NodeModel],
+    parent_group_id: str | None = None,
+    path_prefix: list[str] | None = None,
+) -> list[TaskDestinationGroupItem]:
+    path_prefix = path_prefix or []
+    groups = sorted(
+        [node for node in nodes if node.kind == "group" and node.parent_node_id == parent_group_id],
+        key=lambda node: ((node.title or "Untitled group").casefold(), node.id),
+    )
+
+    items: list[TaskDestinationGroupItem] = []
+    for group in groups:
+        title = group.title or "Untitled group"
+        path = [*path_prefix, title]
+        items.append(
+            TaskDestinationGroupItem(
+                groupId=group.id,
+                title=title,
+                path=path,
+                children=build_task_destination_groups(nodes, group.id, path),
+            )
+        )
+    return items
+
+
+def serialize_task_destinations(session: Session) -> list[TaskDestinationWorkspaceItem]:
+    workspaces = session.scalars(
+        select(WorkspaceModel)
+        .options(selectinload(WorkspaceModel.projects).selectinload(ProjectModel.nodes))
+        .order_by(WorkspaceModel.sort_order.asc(), WorkspaceModel.updated_at.desc())
+    ).all()
+    if not workspaces:
+        workspace = create_default_workspace(session)
+        session.commit()
+        session.refresh(workspace)
+        workspaces = session.scalars(
+            select(WorkspaceModel)
+            .options(selectinload(WorkspaceModel.projects).selectinload(ProjectModel.nodes))
+            .order_by(WorkspaceModel.sort_order.asc(), WorkspaceModel.updated_at.desc())
+        ).all()
+
+    return [
+        TaskDestinationWorkspaceItem(
+            workspaceId=workspace.id,
+            workspaceName=workspace.name,
+            projects=[
+                TaskDestinationProjectItem(
+                    workspaceId=workspace.id,
+                    workspaceName=workspace.name,
+                    projectId=project.id,
+                    projectTitle=project.title or "Untitled Project",
+                    groups=build_task_destination_groups(list(project.nodes)),
+                )
+                for project in sorted(workspace.projects, key=lambda entry: (entry.sort_order, entry.updated_at))
+            ],
+        )
+        for workspace in workspaces
+    ]
+
+
+def get_scope_insert_position(nodes: list[NodeModel], parent_group_id: str | None) -> dict[str, float]:
+    sibling_count = sum(1 for node in nodes if node.parent_node_id == parent_group_id)
+    return {
+        "x": 80 + (sibling_count % 3) * 260,
+        "y": 120 + (sibling_count // 3) * 160,
+    }
 
 
 def order_nodes_for_insert(nodes: list[NodePayload]) -> list[NodePayload]:
@@ -1104,6 +1259,11 @@ def list_available_tasks(
     return available_task_items(projects)
 
 
+@app.get("/api/task-destinations", response_model=list[TaskDestinationWorkspaceItem])
+def list_task_destinations(session: Session = Depends(get_session)):
+    return serialize_task_destinations(session)
+
+
 @app.post("/api/workspaces", response_model=WorkspaceListItem, status_code=201)
 def create_workspace(payload: CreateWorkspaceRequest, session: Session = Depends(get_session)):
     name = payload.name.strip()
@@ -1314,6 +1474,58 @@ def complete_available_task(
         projectId=project_id,
         taskId=task_id,
         status="done",
+        graphVersion=project.graph_version,
+    )
+
+
+@app.post("/api/tasks", response_model=CreateTaskResponse, status_code=201)
+def create_task(payload: CreateTaskRequest, session: Session = Depends(get_session)):
+    workspace = ensure_workspace(session, payload.workspaceId)
+    project = load_project_graph(session, payload.workspaceId, payload.projectId, for_update=True)
+
+    parent_group = None
+    if payload.parentGroupId:
+        parent_group = next((node for node in project.nodes if node.id == payload.parentGroupId), None)
+        if not parent_group:
+            raise HTTPException(status_code=404, detail="Destination group not found.")
+        if parent_group.kind != "group":
+            raise HTTPException(status_code=409, detail="Tasks can only be created inside project roots or groups.")
+
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Task title cannot be blank.")
+
+    timestamp = utc_now()
+    snapshot = serialize_project(project)
+    node_id = str(uuid4())
+    snapshot.nodes.append(
+        NodePayload(
+            id=node_id,
+            kind="task",
+            title=title,
+            status="todo",
+            position=get_scope_insert_position(list(project.nodes), payload.parentGroupId),
+            description=payload.description.strip(),
+            completionCriteria="",
+            tags=normalize_tags(payload.tags),
+            createdAt=timestamp,
+            dueDate=payload.dueDate,
+            doDate=payload.doDate,
+            parentId=payload.parentGroupId,
+        )
+    )
+    apply_snapshot_to_project(session, project, snapshot)
+    session.commit()
+    session.refresh(project)
+
+    return CreateTaskResponse(
+        workspaceId=workspace.id,
+        workspaceName=workspace.name,
+        projectId=project.id,
+        projectTitle=project.title or "Untitled Project",
+        parentGroupId=payload.parentGroupId,
+        taskId=node_id,
+        title=title,
         graphVersion=project.graph_version,
     )
 

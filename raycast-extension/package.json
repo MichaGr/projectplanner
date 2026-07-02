@@ -1,0 +1,60 @@
+{
+  "name": "project-planner-raycast",
+  "title": "Project Planner",
+  "version": "0.1.0",
+  "description": "Private Raycast extension for Project Planner",
+  "icon": "icon.svg",
+  "author": "micha",
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "add-task",
+      "title": "Add Task",
+      "description": "Create a task in Project Planner",
+      "mode": "view"
+    },
+    {
+      "name": "list-available-tasks",
+      "title": "List Available Tasks",
+      "description": "Browse actionable Project Planner tasks",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "serverUrl",
+      "type": "textfield",
+      "required": true,
+      "title": "Server URL",
+      "description": "Public base URL of the hosted Project Planner app"
+    },
+    {
+      "name": "username",
+      "type": "textfield",
+      "required": true,
+      "title": "Username",
+      "description": "Shared login username for Project Planner"
+    },
+    {
+      "name": "password",
+      "type": "password",
+      "required": true,
+      "title": "Password",
+      "description": "Shared login password for Project Planner"
+    }
+  ],
+  "scripts": {
+    "dev": "ray develop",
+    "build": "ray build",
+    "lint": "ray lint"
+  },
+  "dependencies": {
+    "@raycast/api": "^1.102.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/react": "^18.3.12",
+    "typescript": "^5.6.3"
+  }
+}

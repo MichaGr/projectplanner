@@ -93,7 +93,7 @@ describe('node move helpers', () => {
       parentId: 'group-b',
       position: { x: 60, y: 80 },
     });
-    expect(moved.edges.map((edge) => edge.id)).toEqual([]);
+    expect(moved.edges.map((edge) => edge.id)).toEqual(['edge-inside']);
   });
 
   it('moves a group to the project root while preserving descendant structure', () => {

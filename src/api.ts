@@ -36,6 +36,55 @@ export type AvailableTaskItem = {
   projectTitle: string;
   taskId: string;
   title: string;
+  description: string;
+  dueDate: string | null;
+  doDate: string | null;
+  tags: string[];
+  scopePath: string[];
+};
+
+export type TaskDestinationGroupItem = {
+  groupId: string;
+  title: string;
+  path: string[];
+  children: TaskDestinationGroupItem[];
+};
+
+export type TaskDestinationProjectItem = {
+  workspaceId: string;
+  workspaceName: string;
+  projectId: string;
+  projectTitle: string;
+  rootLabel: string;
+  groups: TaskDestinationGroupItem[];
+};
+
+export type TaskDestinationWorkspaceItem = {
+  workspaceId: string;
+  workspaceName: string;
+  projects: TaskDestinationProjectItem[];
+};
+
+export type CreateTaskRequest = {
+  workspaceId: string;
+  projectId: string;
+  parentGroupId: string | null;
+  title: string;
+  description: string;
+  dueDate: string | null;
+  doDate: string | null;
+  tags: string[];
+};
+
+export type CreateTaskResponse = {
+  workspaceId: string;
+  workspaceName: string;
+  projectId: string;
+  projectTitle: string;
+  parentGroupId: string | null;
+  taskId: string;
+  title: string;
+  graphVersion: number;
 };
 
 export type CompleteTaskResponse = {
@@ -146,6 +195,20 @@ export const fetchAvailableTasks = async (scope: {
   if (scope.projectId) params.set('projectId', scope.projectId);
   const response = await fetchWithRetry(`/api/available-tasks?${params.toString()}`);
   return ensureOk<AvailableTaskItem[]>(response);
+};
+
+export const fetchTaskDestinations = async (): Promise<TaskDestinationWorkspaceItem[]> => {
+  const response = await fetchWithRetry('/api/task-destinations');
+  return ensureOk<TaskDestinationWorkspaceItem[]>(response);
+};
+
+export const createTask = async (payload: CreateTaskRequest): Promise<CreateTaskResponse> => {
+  const response = await fetch('/api/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return ensureOk<CreateTaskResponse>(response);
 };
 
 export const createWorkspace = async (payload: { name: string; description?: string }): Promise<WorkspaceSummary> => {

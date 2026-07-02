@@ -311,9 +311,166 @@ def test_available_tasks_support_all_scopes_and_inherited_blockers(client: TestC
         },
     )
     assert [item["taskId"] for item in project_tasks.json()] == ["beta-task"]
+    assert all_tasks.json()[0]["scopePath"] == ["Phase"]
+    assert all_tasks.json()[0]["description"] == ""
+    assert all_tasks.json()[0]["tags"] == []
 
     invalid_scope = client.get("/api/available-tasks", params={"scope": "workspace"})
     assert invalid_scope.status_code == 422
+
+
+def test_task_destinations_return_workspace_project_and_group_hierarchy(client: TestClient):
+    workspace = create_workspace(client, "Planning")
+    project = create_project(client, workspace["workspaceId"], "Roadmap")
+    replace_graph(
+        client,
+        workspace["workspaceId"],
+        project["projectId"],
+        {
+            "root": {"title": "Roadmap", "description": "", "completionCriteria": "", "tags": []},
+            "nodes": [
+                {"id": "alpha", "kind": "group", "title": "Alpha", "status": "todo", "position": {"x": 0, "y": 0}, "tags": []},
+                {"id": "beta", "kind": "group", "title": "Beta", "status": "todo", "position": {"x": 10, "y": 0}, "parentId": "alpha", "tags": []},
+                {"id": "task-1", "kind": "task", "title": "Task", "status": "todo", "position": {"x": 0, "y": 0}, "parentId": "beta", "tags": []},
+            ],
+            "edges": [],
+        },
+    )
+
+    response = client.get("/api/task-destinations")
+    assert response.status_code == 200
+    destinations = response.json()
+    planning = next(item for item in destinations if item["workspaceId"] == workspace["workspaceId"])
+    roadmap = next(item for item in planning["projects"] if item["projectId"] == project["projectId"])
+    assert roadmap["rootLabel"] == "Project root"
+    assert roadmap["groups"] == [
+        {
+            "groupId": "alpha",
+            "title": "Alpha",
+            "path": ["Alpha"],
+            "children": [
+                {
+                    "groupId": "beta",
+                    "title": "Beta",
+                    "path": ["Alpha", "Beta"],
+                    "children": [],
+                }
+            ],
+        }
+    ]
+
+
+def test_create_task_creates_root_level_task_and_increments_graph_version(client: TestClient):
+    workspace = create_workspace(client, "Delivery")
+    project = create_project(client, workspace["workspaceId"], "Launch")
+
+    response = client.post(
+        "/api/tasks",
+        json={
+            "workspaceId": workspace["workspaceId"],
+            "projectId": project["projectId"],
+            "parentGroupId": None,
+            "title": "Ship raycast support",
+            "description": "Release the extension",
+            "dueDate": "2026-07-10",
+            "doDate": "2026-07-08",
+            "tags": [" Delivery.Release ", "Raycast"],
+        },
+    )
+    assert response.status_code == 201
+    created = response.json()
+    assert created["workspaceId"] == workspace["workspaceId"]
+    assert created["parentGroupId"] is None
+
+    stored = client.get(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/graph"
+    )
+    assert stored.status_code == 200
+    graph = stored.json()
+    node = next(item for item in graph["project"]["nodes"] if item["id"] == created["taskId"])
+    assert node["title"] == "Ship raycast support"
+    assert node["description"] == "Release the extension"
+    assert node["dueDate"] == "2026-07-10"
+    assert node["doDate"] == "2026-07-08"
+    assert node["tags"] == ["Delivery.Release", "Raycast"]
+    assert node["parentId"] is None
+    assert graph["graphVersion"] == created["graphVersion"]
+
+
+def test_create_task_creates_nested_task_inside_group(client: TestClient):
+    workspace = create_workspace(client, "Delivery")
+    project = create_project(client, workspace["workspaceId"], "Launch")
+    replace_graph(
+        client,
+        workspace["workspaceId"],
+        project["projectId"],
+        {
+            "root": {"title": "Launch", "description": "", "completionCriteria": "", "tags": []},
+            "nodes": [
+                {"id": "phase-1", "kind": "group", "title": "Phase 1", "status": "todo", "position": {"x": 0, "y": 0}, "tags": []},
+            ],
+            "edges": [],
+        },
+    )
+
+    response = client.post(
+        "/api/tasks",
+        json={
+            "workspaceId": workspace["workspaceId"],
+            "projectId": project["projectId"],
+            "parentGroupId": "phase-1",
+            "title": "Implement login retry",
+            "description": "",
+            "dueDate": None,
+            "doDate": None,
+            "tags": [],
+        },
+    )
+    assert response.status_code == 201
+
+    stored = client.get(
+        f"/api/workspaces/{workspace['workspaceId']}/projects/{project['projectId']}/graph"
+    ).json()["project"]
+    node = next(item for item in stored["nodes"] if item["title"] == "Implement login retry")
+    assert node["parentId"] == "phase-1"
+
+
+def test_create_task_rejects_invalid_dates(client: TestClient):
+    workspace = create_workspace(client, "Delivery")
+    project = create_project(client, workspace["workspaceId"], "Launch")
+
+    response = client.post(
+        "/api/tasks",
+        json={
+            "workspaceId": workspace["workspaceId"],
+            "projectId": project["projectId"],
+            "parentGroupId": None,
+            "title": "Invalid schedule",
+            "description": "",
+            "dueDate": "2026-07-08",
+            "doDate": "2026-07-10",
+            "tags": [],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_task_destinations_and_create_task_require_authentication():
+    unauthenticated_client = TestClient(app)
+    assert unauthenticated_client.get("/api/task-destinations").status_code == 401
+    assert unauthenticated_client.post(
+        "/api/tasks",
+        json={
+            "workspaceId": "workspace",
+            "projectId": "project",
+            "parentGroupId": None,
+            "title": "Blocked",
+            "description": "",
+            "dueDate": None,
+            "doDate": None,
+            "tags": [],
+        },
+    ).status_code == 401
 
 
 def test_complete_available_task_is_targeted_and_increments_graph_version(client: TestClient):

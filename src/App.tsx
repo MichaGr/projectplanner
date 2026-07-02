@@ -1366,6 +1366,11 @@ function PlannerApp() {
           projectTitle: displaySnapshot.root.title,
           taskId: node.id,
           title: node.title,
+          description: node.description,
+          dueDate: node.dueDate ?? null,
+          doDate: node.doDate ?? null,
+          tags: [...node.tags],
+          scopePath: [],
         })),
     );
   }, [displaySnapshot.nodes, displaySnapshot.root.title, plannerGraph, projectId, workspaceId, workspaces]);
